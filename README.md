@@ -3,6 +3,8 @@
 [![CI](https://github.com/ZhanJN/PNote/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhanJN/PNote/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/ZhanJN/PNote)](https://github.com/ZhanJN/PNote/releases/latest)
 
+> 初版发布于 2026-11-24 · [下载](https://github.com/ZhanJN/PNote/releases/tag/v1.51.0)
+
 一个纯局域网、无账号、无云端的极简待办 + 笔记应用。Flutter 编写，Windows 与 Android 共用一套代码，数据以「Markdown 文件 + SQLite」形式存在本地，两台设备连同一个 Wi-Fi 就能互相同步。
 
 A local-first todo & note app: peer-to-peer sync over LAN, no account, no cloud, no server.
