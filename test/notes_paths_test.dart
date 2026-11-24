@@ -38,7 +38,11 @@ void main() {
     // 库内相对路径统一存成 `2026/11/x.md`（见 NotesStore.list）；直接拼出来
     // 会得到 `…\2026/11/x.md`，explorer 的 /select, 会退回「桌面」。
     test('相对路径里的 / 要换成本机分隔符', () {
-      final root = Directory(p.join('D:', 'PNote_V2', kNotesFolderName));
+      // 用「本机绝对路径」当库根：以前写死 `D:\…`，在 Linux 的 CI 上
+      // 那不是绝对路径，isAbsolute 断言就会挂（1.50.2）。
+      final root = Directory(
+        p.join(Directory.current.path, 'PNote_V2', kNotesFolderName),
+      );
       final path = nativePathIn(root, '2026/11/2026-11-23 2334 125.md');
       expect(path.contains('/'), Platform.isWindows ? isFalse : anything);
       expect(path.contains('\\'), Platform.isWindows ? anything : isFalse);
@@ -48,7 +52,9 @@ void main() {
     });
 
     test('已经是本机分隔符时保持不变', () {
-      final root = Directory(p.join('D:', 'PNote_V2', kNotesFolderName));
+      final root = Directory(
+        p.join(Directory.current.path, 'PNote_V2', kNotesFolderName),
+      );
       final rel = p.join('2026', '11', 'a.md');
       expect(nativePathIn(root, rel), p.join(root.path, rel));
     });

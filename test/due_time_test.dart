@@ -35,6 +35,22 @@ TaskState node({
 DateTime at(int y, int m, int d, [int h = 0, int mi = 0]) =>
     DateTime(y, m, d, h, mi);
 
+String two(int v) => v.toString().padLeft(2, '0');
+
+/// 把「本机时间」写成生产同格式的 due 字符串（带本机时区偏移）。
+///
+/// 以前这里硬编码 `+08:00`，在 UTC 的 CI 上 `now` 是本地 10:00 而 due 是
+/// 10:25+08:00（= 02:25 UTC），于是「未来 25 分钟」被算成「逾期 1 天」。
+/// 用本机偏移生成后，测试与运行环境时区无关（1.50.2）。
+String precise(DateTime local) {
+  final offset = local.timeZoneOffset;
+  final sign = offset.isNegative ? '-' : '+';
+  final abs = offset.abs();
+  return '${local.year.toString().padLeft(4, '0')}-${two(local.month)}-'
+      '${two(local.day)}T${two(local.hour)}:${two(local.minute)}:00'
+      '$sign${two(abs.inHours)}:${two(abs.inMinutes % 60)}';
+}
+
 void main() {
   group('全天任务文案', () {
     final now = at(2026, 11, 23, 10);
@@ -60,39 +76,45 @@ void main() {
     final now = at(2026, 11, 23, 10);
     test('不足一小时', () {
       expect(
-        formatDue(node(due: '2026-11-23T10:25:00+08:00', precision: 2), now),
+        formatDue(
+          node(due: precise(now.add(const Duration(minutes: 25))), precision: 2),
+          now,
+        ),
         '25 分钟后',
       );
     });
     test('不足一天', () {
       expect(
-        formatDue(node(due: '2026-11-23T13:00:00+08:00', precision: 2), now),
+        formatDue(
+          node(due: precise(now.add(const Duration(hours: 3))), precision: 2),
+          now,
+        ),
         '3 小时后',
       );
     });
     test('一周内补时刻，余数小时不为零写成两天', () {
       expect(
-        formatDue(node(due: '2026-11-26T10:00:00+08:00', precision: 2), now),
+        formatDue(node(due: precise(at(2026, 11, 26, 10)), precision: 2), now),
         '3 天后 10:00',
       );
       expect(
-        formatDue(node(due: '2026-11-26T15:00:00+08:00', precision: 2), now),
+        formatDue(node(due: precise(at(2026, 11, 26, 15)), precision: 2), now),
         '3 天 5 小时后',
       );
     });
     test('超过一周显示日期', () {
       expect(
-        formatDue(node(due: '2026-12-05T09:30:00+08:00', precision: 2), now),
+        formatDue(node(due: precise(at(2026, 12, 5, 9, 30)), precision: 2), now),
         '12月5日',
       );
     });
     test('逾期按整天向上取整，最少一天', () {
       expect(
-        formatDue(node(due: '2026-11-23T09:30:00+08:00', precision: 2), now),
+        formatDue(node(due: precise(at(2026, 11, 23, 9, 30)), precision: 2), now),
         '逾期 1 天',
       );
       expect(
-        formatDue(node(due: '2026-11-22T04:00:00+08:00', precision: 2), now),
+        formatDue(node(due: precise(at(2026, 11, 22, 4)), precision: 2), now),
         '逾期 2 天',
       );
     });
@@ -106,21 +128,25 @@ void main() {
     });
     test('红点只在接下来 24 小时', () {
       expect(
-        isUrgent(node(due: '2026-11-24T09:00:00+08:00', precision: 2), now),
+        isUrgent(node(due: precise(at(2026, 11, 24, 9)), precision: 2), now),
         isTrue,
       );
       expect(
-        isUrgent(node(due: '2026-11-24T11:00:00+08:00', precision: 2), now),
+        isUrgent(node(due: precise(at(2026, 11, 24, 11)), precision: 2), now),
         isFalse,
       );
       expect(
-        isUrgent(node(due: '2026-11-23T09:00:00+08:00', precision: 2), now),
+        isUrgent(node(due: precise(at(2026, 11, 23, 9)), precision: 2), now),
         isFalse,
         reason: '逾期不亮红点',
       );
       expect(
         isUrgent(
-          node(due: '2026-11-23T20:00:00+08:00', precision: 2, done: true),
+          node(
+            due: precise(at(2026, 11, 23, 20)),
+            precision: 2,
+            done: true,
+          ),
           now,
         ),
         isFalse,
@@ -139,7 +165,7 @@ void main() {
       expect(inSlice(y, TimeSlice.today, now), isFalse);
     });
     test('精确任务过了点就是逾期，不再算今天', () {
-      final t = node(due: '2026-11-23T09:00:00+08:00', precision: 2);
+      final t = node(due: precise(at(2026, 11, 23, 9)), precision: 2);
       expect(inSlice(t, TimeSlice.overdue, now), isTrue);
       expect(inSlice(t, TimeSlice.today, now), isFalse);
     });

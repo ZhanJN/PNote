@@ -37,6 +37,19 @@ TaskState node({
 DateTime at(int y, int m, int d, [int h = 0, int mi = 0]) =>
     DateTime(y, m, d, h, mi);
 
+String two(int v) => v.toString().padLeft(2, '0');
+
+/// 把「本机时间」写成生产同格式的 due 字符串（带本机时区偏移）。
+/// 硬编码 `+08:00` 在 UTC 的 CI 上会把未来时刻算成过去（1.50.2）。
+String precise(DateTime local) {
+  final offset = local.timeZoneOffset;
+  final sign = offset.isNegative ? '-' : '+';
+  final abs = offset.abs();
+  return '${local.year.toString().padLeft(4, '0')}-${two(local.month)}-'
+      '${two(local.day)}T${two(local.hour)}:${two(local.minute)}:00'
+      '$sign${two(abs.inHours)}:${two(abs.inMinutes % 60)}';
+}
+
 void main() {
   group('提前量三层继承', () {
     test('单条 > 组 > 全局', () {
@@ -75,12 +88,10 @@ void main() {
     });
 
     test('精确任务按时刻减提前量', () {
-      final t = node(due: '2026-11-23T14:00:00+08:00', precision: 2);
+      final t = node(due: precise(at(2026, 11, 23, 14)), precision: 2);
       expect(
         reminderAt(t, lead: 60),
-        DateTime.parse('2026-11-23T14:00:00+08:00')
-            .toLocal()
-            .subtract(const Duration(hours: 1)),
+        at(2026, 11, 23, 13),
       );
     });
 
@@ -96,9 +107,9 @@ void main() {
       final now = at(2026, 11, 23, 10);
       final specs = planReminders(
         [
-          node(id: 'ok', due: '2026-11-23T14:00:00+08:00', precision: 2),
-          node(id: 'done', done: true, due: '2026-11-23T14:00:00+08:00'),
-          node(id: 'group', isGroup: true, due: '2026-11-23T14:00:00+08:00'),
+          node(id: 'ok', due: precise(at(2026, 11, 23, 14)), precision: 2),
+          node(id: 'done', done: true, due: precise(at(2026, 11, 23, 14))),
+          node(id: 'group', isGroup: true, due: precise(at(2026, 11, 23, 14))),
           node(id: 'nodue'),
           // 今早 9:00 的全天任务，提前 15 分钟已在过去，不补发。
           node(id: 'past', due: '2026-11-23', precision: 1),
@@ -117,10 +128,10 @@ void main() {
           node(
             id: 'a',
             parent: 'g',
-            due: '2026-11-23T15:00:00+08:00',
+            due: precise(at(2026, 11, 23, 15)),
             precision: 2,
           ),
-          node(id: 'b', due: '2026-11-23T14:00:00+08:00', precision: 2),
+          node(id: 'b', due: precise(at(2026, 11, 23, 14)), precision: 2),
         ],
         settings: settings,
         now: now,
@@ -140,7 +151,7 @@ void main() {
 
     test('通知正文用任务文案', () {
       final specs = planReminders(
-        [node(due: '2026-11-23T14:00:00+08:00', precision: 2)],
+        [node(due: precise(at(2026, 11, 23, 14)), precision: 2)],
         settings: settings,
         now: at(2026, 11, 23, 10),
       );
@@ -149,7 +160,7 @@ void main() {
 
     test('总开关关闭就不排', () {
       final specs = planReminders(
-        [node(due: '2026-11-23T14:00:00+08:00', precision: 2)],
+        [node(due: precise(at(2026, 11, 23, 14)), precision: 2)],
         settings: const ReminderSettings(enabled: false),
         now: at(2026, 11, 23, 10),
       );
