@@ -1,0 +1,17 @@
+* text=auto eol=lf
+
+# Windows 批处理必须保持 CRLF，cmd 才不会被 LF 错行解析
+*.bat text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.so binary
+*.dll binary
+*.exe binary
+*.apk binary
+*.zip binary
