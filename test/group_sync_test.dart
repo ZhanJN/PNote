@@ -44,8 +44,8 @@ void main() {
         purged: const {},
       );
 
-  test('协议升到 pnote-sync/7', () {
-    expect(kProto, 'pnote-sync/7');
+  test('协议升到 pnote-sync/8', () {
+    expect(kProto, 'pnote-sync/8');
   });
 
   test('组 + 任务往返：kind / parent / collapsed / color 都保留', () {

@@ -11,10 +11,12 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:pnote/data/task_dao.dart';
 import 'package:pnote/notes/notes_paths.dart';
+import 'package:pnote/sync/account.dart';
 import 'package:pnote/sync/sync_service.dart';
 import 'package:pnote/theme/theme_controller.dart';
 import 'package:pnote/ui/devices/devices_page.dart';
 import 'package:pnote/ui/reminders/reminder_section.dart';
+import 'package:pnote/ui/settings/account_dialog.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, this.sync});
@@ -83,6 +85,25 @@ class SettingsPage extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
             child: Text(
               '主题与动效只保存在这台设备上，不会同步到其它设备。',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          const Divider(),
+          // 1.51：账号 = 一个名字。只在本机保存（meta），不随同步走 ——
+          // 否则两台设备会互相把对方的名字改成自己的。
+          _SectionTitle('账号'),
+          Card(
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            clipBehavior: Clip.antiAlias,
+            child: _AccountTile(dao: controller.dao, sync: sync),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+            child: Text(
+              '只有账号名相同的设备才会互相同步（任务和笔记都算）。'
+              '没有密码，换设备时把名字填成一样的就行。',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -256,6 +277,77 @@ class _NotesLibraryTileState extends State<_NotesLibraryTile> {
       ),
       trailing: const Icon(Icons.chevron_right),
       onTap: _path == null ? null : _open,
+    );
+  }
+}
+
+/// 账号行（1.51）：显示当前名字，点开改。
+///
+/// 名字只存本机 meta；改完立刻让 [SyncService] 用新名字广播，
+/// 不用重启 App —— 否则用户改完还要重开才生效，很容易以为没改成功。
+class _AccountTile extends StatefulWidget {
+  const _AccountTile({required this.dao, this.sync});
+
+  final TaskDao dao;
+  final SyncService? sync;
+
+  @override
+  State<_AccountTile> createState() => _AccountTileState();
+}
+
+class _AccountTileState extends State<_AccountTile> {
+  String? _name;
+  String _lastPrivate = kDefaultAccount;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final raw = await widget.dao.readSetting(kAccountKey);
+    final private = await widget.dao.readSetting(kAccountPrivateKey);
+    if (!mounted) return;
+    setState(() {
+      _name = normalizeAccount(raw ?? kDefaultAccount);
+      _lastPrivate = normalizeAccount(private ?? kDefaultAccount);
+    });
+  }
+
+  Future<void> _edit() async {
+    final current = _name;
+    if (current == null) return;
+    final next = await showAccountDialog(
+      context,
+      current: current,
+      lastPrivate: _lastPrivate,
+    );
+    if (next == null || next == current) return;
+    // 切到「公开同步」时把当前名字记成私有名；切回私有名时更新记忆。
+    final lastPrivate = isPublicAccount(next) ? current : next;
+    await widget.dao.writeSetting(kAccountKey, next);
+    await widget.dao.writeSetting(kAccountPrivateKey, lastPrivate);
+    widget.sync?.setAccount(next);
+    if (!mounted) return;
+    setState(() {
+      _name = next;
+      _lastPrivate = lastPrivate;
+    });
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text('已切换到「$next」')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = _name;
+    return ListTile(
+      leading: const Icon(Icons.badge_outlined),
+      title: const Text('账号'),
+      subtitle: Text(name ?? '读取中…'),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: name == null ? null : _edit,
     );
   }
 }

@@ -28,20 +28,29 @@ class DevicesPage extends StatefulWidget {
 
 class _DevicesPageState extends State<DevicesPage> {
   List<Peer> _peers = const [];
+  List<Peer> _others = const [];
   StreamSubscription<List<Peer>>? _sub;
   Timer? _ticker;
 
   @override
   void initState() {
     super.initState();
-    _peers = widget.sync?.peers ?? const [];
-    _sub = widget.sync?.peerChanges.listen((list) {
-      if (mounted) setState(() => _peers = list);
+    _refreshLists();
+    _sub = widget.sync?.peerChanges.listen((_) {
+      if (mounted) setState(_refreshLists);
     });
     // 「最后发现 12 秒前」要自己走字，否则界面停在打开那一刻。
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
+  }
+
+  /// 广播列表里混着不同账号的设备：同账号的才参与同步，其它账号单独列，
+  /// 让用户一眼看出「不是没找到，是账号不一样」。
+  void _refreshLists() {
+    final sync = widget.sync;
+    _peers = sync?.peers ?? const [];
+    _others = sync?.otherAccountPeers ?? const [];
   }
 
   @override
@@ -72,6 +81,12 @@ class _DevicesPageState extends State<DevicesPage> {
                   leading: const Icon(Icons.badge_outlined),
                   title: const Text('设备名称'),
                   subtitle: Text(sync?.deviceName ?? '本机'),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.group_outlined),
+                  title: const Text('账号'),
+                  subtitle: Text(sync?.account ?? '读取中…'),
                 ),
                 const Divider(height: 1),
                 ListTile(
@@ -111,15 +126,15 @@ class _DevicesPageState extends State<DevicesPage> {
               ),
             ),
           const Divider(),
-          _SectionTitle('同一局域网内的其它设备（${_peers.length}）'),
+          _SectionTitle('同一局域网内的其它设备（${_peers.length} 台同账号）'),
           if (_peers.isEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
               child: Text(
                 sync == null
                     ? '同步未启用，看不到其它设备。'
-                    : '还没发现其它设备。让另一台设备也打开 PNote、连同一个 Wi-Fi，'
-                          '每台设备每秒都会广播一次自己。',
+                    : '还没发现同账号的设备。让另一台设备也打开 PNote、连同一个 '
+                          'Wi-Fi、账号名填成一样的，每台设备每秒都会广播一次自己。',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -138,6 +153,32 @@ class _DevicesPageState extends State<DevicesPage> {
                 ],
               ),
             ),
+          if (_others.isNotEmpty) ...[
+            const Divider(),
+            _SectionTitle('其它账号（${_others.length} 台，不参与同步）'),
+            Card(
+              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                children: [
+                  for (var i = 0; i < _others.length; i++) ...[
+                    if (i > 0) const Divider(height: 1),
+                    _PeerTile(peer: _others[i], dimmed: true),
+                  ],
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+              child: Text(
+                '这些设备在广播里自报的账号和你不同，所以不会互相同步。'
+                '要和它同步，把两边的账号名改成一样即可。',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
           const Divider(),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
@@ -170,9 +211,12 @@ class _DevicesPageState extends State<DevicesPage> {
 }
 
 class _PeerTile extends StatelessWidget {
-  const _PeerTile({required this.peer});
+  const _PeerTile({required this.peer, this.dimmed = false});
 
   final Peer peer;
+
+  /// 其它账号的设备：整行淡化 + 副标题说明「不会同步」。
+  final bool dimmed;
 
   @override
   Widget build(BuildContext context) {
@@ -180,10 +224,21 @@ class _PeerTile extends StatelessWidget {
     final id = peer.deviceId.length >= 8
         ? peer.deviceId.substring(0, 8)
         : peer.deviceId;
+    final subtitle = dimmed
+        ? '$id · 账号「${peer.account}」 · 不会同步'
+        : '$id · ${peer.host}:${peer.port}';
     return ListTile(
-      leading: const Icon(Icons.devices_other_outlined),
-      title: Text(peer.deviceName),
-      subtitle: Text('$id · ${peer.host}:${peer.port}'),
+      leading: Icon(
+        dimmed ? Icons.group_off_outlined : Icons.devices_other_outlined,
+        color: dimmed ? theme.colorScheme.outline : null,
+      ),
+      title: Text(
+        peer.deviceName,
+        style: dimmed
+            ? TextStyle(color: theme.colorScheme.outline)
+            : null,
+      ),
+      subtitle: Text(subtitle),
       trailing: Text(
         _ago(peer.lastSeen),
         style: theme.textTheme.bodySmall?.copyWith(

@@ -5,8 +5,13 @@ library;
 
 import 'dart:convert';
 
+import 'package:pnote/sync/account.dart';
+
 /// 发现报文（UDP）的协议号。改动即意味着新旧版本互相看不见，必须同时改文档。
-const String kDiscoveryProto = 'pnote-discover/1';
+///   /1 -> 只有 deviceId / deviceName / port
+///   /2 -> 多一个 account（1.51 账号 / 公开同步），不同账号的设备
+///         互相看不见，广播里直接过滤掉，连拨号都不会发生。
+const String kDiscoveryProto = 'pnote-discover/2';
 
 /// 发现用的 UDP 端口。两台设备都绑这个端口，才能互相听见。
 const int kDiscoveryPort = 47821;
@@ -22,6 +27,7 @@ class Peer {
     required this.host,
     required this.port,
     required this.lastSeen,
+    this.account = '',
   });
 
   final String deviceId;
@@ -30,12 +36,17 @@ class Peer {
   final int port;
   final DateTime lastSeen;
 
+  /// 对端广播里自报的账号名（1.51 起）。扫描兜底找到的候选没有这个信息，
+  /// 因此是空串 —— 真正的账号要等拨号后的 state 报文才知道。
+  final String account;
+
   Peer touched([DateTime? at]) => Peer(
         deviceId: deviceId,
         deviceName: deviceName,
         host: host,
         port: port,
         lastSeen: at ?? DateTime.now(),
+        account: account,
       );
 
   /// 超过 ttl 没再听到广播，就认为它已经不在了（关掉 App / 离开 Wi-Fi）。
@@ -67,17 +78,19 @@ Peer betterPeer(
   return candidate.lastSeen.isAfter(known.lastSeen) ? candidate : known;
 }
 
-/// 广播报文。故意做得极简：只有「我是谁、我在哪个端口等你」。
+/// 广播报文。故意做得极简：只有「我是谁、我在哪个端口等你、我在哪个账号」。
 String encodeAnnounce({
   required String deviceId,
   required String deviceName,
   required int port,
+  String account = kDefaultAccount,
 }) {
   return jsonEncode(<String, Object?>{
     'proto': kDiscoveryProto,
     'deviceId': deviceId,
     'deviceName': deviceName,
     'port': port,
+    'account': account,
   });
 }
 
@@ -100,6 +113,10 @@ Peer? decodeAnnounce(String raw, {required String fromHost}) {
   if (deviceId is! String || deviceId.isEmpty) return null;
   if (port is! int || port <= 0 || port > 65535) return null;
   final name = map['deviceName'];
+  final account = map['account'];
+  // 没有 account 的广播来自 /1 的老版本：按名单过滤的要求，直接当没看见，
+  // 让用户先去把两台都升级（文档 7.6 写明了这是不兼容升级）。
+  if (account is! String || account.isEmpty) return null;
 
   return Peer(
     deviceId: deviceId,
@@ -107,5 +124,6 @@ Peer? decodeAnnounce(String raw, {required String fromHost}) {
     host: fromHost,
     port: port,
     lastSeen: DateTime.now(),
+    account: account,
   );
 }

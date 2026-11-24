@@ -17,6 +17,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:pnote/sync/account.dart';
 import 'package:pnote/sync/peer.dart';
 
 /// 广播间隔。太快浪费电与带宽，太慢用户点「同步」后要等。
@@ -27,13 +28,22 @@ class LanDiscovery {
     required this.deviceId,
     required this.deviceName,
     required this.servicePort,
-  });
+    String account = kDefaultAccount,
+  }) : _account = normalizeAccount(account);
 
   final String deviceId;
   final String deviceName;
 
   /// 本机 WebSocket 端口，随广播发出去，对端据此拨号。
   final int servicePort;
+
+  /// 当前账号名（1.51）。改了要立刻广播一声，别让邻居等下一次定时包。
+  String _account;
+  String get account => _account;
+  set account(String value) {
+    _account = normalizeAccount(value);
+    _announce();
+  }
 
   final Map<String, Peer> _peers = {};
 
@@ -206,6 +216,7 @@ class LanDiscovery {
       deviceId: deviceId,
       deviceName: deviceName,
       port: servicePort,
+      account: _account,
     );
     final bytes = utf8.encode(payload);
     for (final sender in _senders) {
@@ -255,6 +266,7 @@ class LanDiscovery {
       deviceId: deviceId,
       deviceName: deviceName,
       port: servicePort,
+      account: _account,
     );
     final bytes = utf8.encode(payload);
     for (final sender in _senders) {

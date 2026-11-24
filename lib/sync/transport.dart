@@ -18,6 +18,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:pnote/data/models.dart';
+import 'package:pnote/sync/account.dart';
 import 'package:pnote/sync/notes_channel.dart';
 import 'package:pnote/sync/peer.dart';
 import 'package:pnote/sync/payload.dart';
@@ -36,6 +37,8 @@ class SyncServer {
     required this.onRemoteState,
     this.notes,
     this.preferredPort = kSyncPort,
+    this.account = kDefaultAccount,
+    this.accountOf,
   });
 
   final String deviceId;
@@ -47,6 +50,12 @@ class SyncServer {
   final NotesChannel? notes;
 
   final int preferredPort;
+
+  /// 本机账号名。账号可以在设置里改，所以优先用 [accountOf] 每次现读。
+  final String account;
+  final String Function()? accountOf;
+
+  String get currentAccount => accountOf?.call() ?? account;
 
   HttpServer? _server;
 
@@ -89,6 +98,7 @@ class SyncServer {
     final session = _ServerSession(
       socket: socket,
       deviceId: deviceId,
+      account: currentAccount,
       onRemoteState: onRemoteState,
       notes: notes,
     );
@@ -105,12 +115,14 @@ class _ServerSession {
   _ServerSession({
     required this.socket,
     required this.deviceId,
+    required this.account,
     required this.onRemoteState,
     required this.notes,
   });
 
   final WebSocket socket;
   final String deviceId;
+  final String account;
   final Future<SyncState> Function(SyncState) onRemoteState;
   final NotesChannel? notes;
 
@@ -171,11 +183,23 @@ class _ServerSession {
 
   Future<void> _onState(String raw) async {
     final envelope = decodeEnvelope(raw);
+    // 1.51：账号不同就一条数据都不合并，也不回自己的状态。
+    // 「同名才算」是用户定的全部规则，这里不做任何其它验证。
+    if (envelope.account != account) {
+      _send(encodeAck(
+        deviceId: deviceId,
+        ok: false,
+        message: '账号不同（对方「${envelope.account}」）',
+        account: account,
+      ));
+      _close();
+      return;
+    }
     final merged = await onRemoteState(envelope.state);
     final channel = notes;
     final remoteNotes = envelope.notes;
     if (channel == null || remoteNotes == null) {
-      _send(encodeState(merged, notes: null));
+      _send(encodeState(merged, notes: null, account: account));
       _phase = _ServerPhase.done;
       return;
     }
@@ -184,7 +208,7 @@ class _ServerSession {
     await channel.apply(remoteNotes, const []);
     final local = await channel.describe();
     final want = local.wantFrom(remoteNotes);
-    _send(encodeState(merged, notes: local, want: want));
+    _send(encodeState(merged, notes: local, want: want, account: account));
   }
 
   Future<void> _onBlobs(String raw) async {
@@ -249,6 +273,7 @@ Future<SyncExchange> exchangeWithPeerFull({
   required Peer peer,
   required SyncState local,
   NotesChannel? notes,
+  String account = kDefaultAccount,
 }) async {
   final url = 'ws://${peer.host}:${peer.port}/';
   final socket = await WebSocket.connect(url).timeout(kConnectTimeout);
@@ -261,9 +286,20 @@ Future<SyncExchange> exchangeWithPeerFull({
     final channel = notes;
     // 自己的笔记元信息要一开头就发过去，对端才知道它缺什么。
     final mine = channel == null ? null : await channel.describe();
-    socket.add(encodeState(local, notes: mine));
+    socket.add(encodeState(local, notes: mine, account: account));
     if (!await next()) throw const SocketException('对端在回复前关闭了连接');
+    // 监听方发现账号不同时会先回 ack（不再回 state）。把它翻成
+    // AccountMismatch，上层就能提示「账号不同」而不是「协议不兼容」。
+    if (frameType(frames.current) == kTypeAck) {
+      final ack = decodeAck(frames.current);
+      if (!ack.ok) throw AccountMismatch(ack.account ?? '');
+    }
     final first = decodeEnvelope(frames.current);
+    // 1.51：对方和自己不同账号就不合并（监听方一般会先回 ack 拒绝，
+    // 这里再兜一层，防止对方是旧代码或改过的服务端）。
+    if (first.account != account) {
+      throw AccountMismatch(first.account);
+    }
 
     NotesApplyReport? report;
     final remoteNotes = first.notes;
@@ -327,8 +363,14 @@ Future<SyncState> exchangeWithPeer({
   required Peer peer,
   required SyncState local,
   NotesChannel? notes,
+  String account = kDefaultAccount,
 }) async {
-  final result = await exchangeWithPeerFull(peer: peer, local: local, notes: notes);
+  final result = await exchangeWithPeerFull(
+    peer: peer,
+    local: local,
+    notes: notes,
+    account: account,
+  );
   return result.state;
 }
 

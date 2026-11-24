@@ -1,11 +1,11 @@
-# 同步协议 `pnote-sync/7`
+# 同步协议 `pnote-sync/8`
 
 > 纯局域网、点对点、无服务器、无认证、明文传输。只在可信任的家庭网络里使用。
 
 ## 一、发现
 
 - 端口：**UDP 47821**（接收绑 `anyIPv4:47821`，所有网卡一起收）
-- 广播：每个本地 IPv4 一个发送 socket，同时发 `255.255.255.255:47821` 与定向广播 `a.b.c.255:47821`；载荷是 UTF-8 JSON（设备号、设备名、同步端口、协议版本、时间戳）
+- 广播：每个本地 IPv4 一个发送 socket，同时发 `255.255.255.255:47821` 与定向广播 `a.b.c.255:47821`；载荷是 UTF-8 JSON（设备号、设备名、同步端口、协议版本、账号名、时间戳）
 - 兜底：广播收不到时按网段并发扫描（并发 64，单点超时 350 ms，总预算约 8 s）
 - 过滤：跳过虚拟网卡（VMware/VirtualBox 等）；同网段优先，同优先级取「最近见到」的
 
@@ -18,15 +18,15 @@
 
 ## 三、帧
 
-所有帧都是 UTF-8 JSON 对象，顶层必有 `proto`（必须等于 `pnote-sync/7`，否则拒绝并提示协议版本不匹配）与 `type`。
+所有帧都是 UTF-8 JSON 对象，顶层必有 `proto`（必须等于 `pnote-sync/8`，否则拒绝并提示协议版本不匹配）与 `type`。
 
 ### 1. `state`（第一帧，双向）
 
 ```json
 {
-  "proto": "pnote-sync/7",
+  "proto": "pnote-sync/8",
   "type": "state",
-  "deviceId": "…", "deviceName": "…",
+  "deviceId": "…", "deviceName": "…", "account": "我的 PNote",
   "hlc": {"ms": 1732500000000, "c": 3, "dev": "…"},
   "sentAt": 1732500000000,
   "tasks": [ { "id": "…", "createdAt": 0, "kind": 0,
@@ -43,10 +43,18 @@
 - `notes` / `noteDels` / `notePurges`：笔记侧元信息；旧客户端不认识这些键会忽略
 - `want`：本机缺少或版本落后的笔记路径，请求对方发内容
 
+
+> **1.51 起（`/8`）多一条硬规则：`account` 不同就不合并。**
+>
+> - 监听方收到 `state` 后先比 `account`，不同则一条任务/笔记都不落库，回 `ack(ok:false, message:"账号不同", account:<本机账号>)` 并关闭连接；
+> - 拨号方连上后也会校验回包里的 `account`，防止「同名但其实是另一拨人」的设备；
+> - 失败在界面上显示为「账号不同（对方「X」）」，不是「协议不兼容」——前者是操作问题，改个名字即可；
+> - 发现广播（UDP）里也带 `account`，连接设备页会把不同账号的设备灰显标注；扫描兜底找到的候选没有账号信息，连上后才判定。
+
 ### 2. `blobs`（内容帧，可多帧）
 
 ```json
-{ "proto": "pnote-sync/7", "type": "blobs",
+{ "proto": "pnote-sync/8", "type": "blobs",
   "blobs": [ { "path": "2026/11/y.md", "hlc": {...}, "bytes": 1234, "data": "<base64>" } ] }
 ```
 
@@ -55,7 +63,7 @@
 ### 3. `blobsDone`
 
 ```json
-{ "proto": "pnote-sync/7", "type": "blobsDone", "want": ["…"], "skipped": 2 }
+{ "proto": "pnote-sync/8", "type": "blobsDone", "want": ["…"], "skipped": 2 }
 ```
 
 `want` 是「我还需要这些」，`skipped` 是因为超过 4 MB 上限而没发的数量。
@@ -63,7 +71,7 @@
 ### 4. `ack`
 
 ```json
-{ "proto": "pnote-sync/7", "type": "ack", "ok": true, "message": null }
+{ "proto": "pnote-sync/8", "type": "ack", "ok": true, "message": null }
 ```
 
 `ok == false` 时客户端会把 `message` 抛给 UI，不再静默吞掉。

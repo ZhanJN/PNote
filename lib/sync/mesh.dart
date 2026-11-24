@@ -9,6 +9,7 @@ import 'dart:async';
 import 'dart:io' show SocketException;
 
 import 'package:pnote/data/task_dao.dart';
+import 'package:pnote/sync/account.dart';
 import 'package:pnote/sync/notes_channel.dart';
 import 'package:pnote/sync/payload.dart';
 import 'package:pnote/sync/peer.dart';
@@ -39,6 +40,7 @@ Future<List<SyncResult>> syncMesh({
   required PeerCollector collectPeers,
   NotesChannel? notes,
   int maxPasses = kMeshMaxPasses,
+  String account = kDefaultAccount,
 }) async {
   final known = <String, Peer>{};
   final best = <String, SyncResult>{};
@@ -52,6 +54,7 @@ Future<List<SyncResult>> syncMesh({
         deviceName: deviceName,
         peer: peer,
         notes: notes,
+        account: account,
       );
       final prev = best[key];
       // 每台只保留「最能代表这一趟」的那次：优先第一次成功的。
@@ -103,12 +106,14 @@ Future<List<SyncResult>> syncWithPeers({
   required List<Peer> peers,
   NotesChannel? notes,
   int? passes,
+  String account = kDefaultAccount,
 }) {
   return syncMesh(
     dao: dao,
     deviceName: deviceName,
     notes: notes,
     maxPasses: passes ?? kMeshMaxPasses,
+    account: account,
     collectPeers: (pass) async => pass == 0 ? peers : const <Peer>[],
   );
 }
@@ -123,6 +128,7 @@ Future<SyncResult> exchangeWithDao({
   required String deviceName,
   required Peer peer,
   NotesChannel? notes,
+  String account = kDefaultAccount,
 }) async {
   final SyncExchange exchange;
   try {
@@ -130,9 +136,16 @@ Future<SyncResult> exchangeWithDao({
       peer: peer,
       local: await dao.exportState(deviceName: deviceName),
       notes: notes,
+      account: account,
     );
   } on TimeoutException catch (e) {
     return SyncResult.failed(SyncFailure.timeout, detail: e.message);
+  } on AccountMismatch catch (e) {
+    return SyncResult.failed(
+      SyncFailure.account,
+      detail: e.peerAccount,
+      peerName: peer.deviceName,
+    );
   } on PayloadException catch (e) {
     return SyncResult.failed(SyncFailure.protocol, detail: e.message);
   } on SocketException catch (e) {

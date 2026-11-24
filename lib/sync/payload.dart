@@ -5,6 +5,7 @@ library;
 import 'dart:convert';
 
 import 'package:pnote/data/models.dart';
+import 'package:pnote/sync/account.dart';
 import 'package:pnote/sync/hlc.dart';
 import 'package:pnote/sync/notes_channel.dart';
 
@@ -32,7 +33,10 @@ class PayloadException implements Exception {
 ///         want    只出现在监听方的回包里：「我需要这些路径的内容」
 ///         另有两种新帧：blobs（内容分块，每块 ≤ 1 MB）与 blobsDone。
 ///         旧版本收到带 notes 的报文会因为不认识这个键而拒绝，故必须升版本。
-const String kProto = 'pnote-sync/7';
+///   /8 -> state 帧多一个 account（1.51 账号）。两端账号不同就不合并：
+///         监听方直接回 ack(ok:false,"账号不同") 并关闭；拨号方也校验
+///         回包里的 account，防止连到「同名但其实是另一拨人」的设备。
+const String kProto = 'pnote-sync/8';
 const String kTypeState = 'state';
 const String kTypeAck = 'ack';
 const String kTypeBlobs = 'blobs';
@@ -46,11 +50,15 @@ const int kBlobChunkBytes = 1024 * 1024;
 class SyncEnvelope {
   const SyncEnvelope({
     required this.state,
+    required this.account,
     this.notes,
     this.want = const [],
   });
 
   final SyncState state;
+
+  /// 对端自报的账号名（1.51）。调用方拿它和本机账号比，不同就不能合并。
+  final String account;
 
   /// 对端的笔记元信息；对方版本太旧（没有这个键）时为 null。
   final NotesSyncState? notes;
@@ -68,6 +76,7 @@ String encodeState(
   DateTime? sentAt,
   NotesSyncState? notes,
   List<String> want = const [],
+  String account = kDefaultAccount,
 }) {
   final now = sentAt ?? DateTime.now();
   final purgedIds = state.purged.keys.toList()..sort();
@@ -76,6 +85,7 @@ String encodeState(
     'type': kTypeState,
     'deviceId': state.deviceId,
     'deviceName': state.deviceName,
+    'account': account,
     'hlc': state.maxHlc?.toJson() ?? {'ms': 0, 'c': 0, 'dev': state.deviceId},
     'sentAt': now.millisecondsSinceEpoch,
     'tasks': [for (final t in state.tasks.values) t.toJson()],
@@ -122,6 +132,9 @@ SyncEnvelope decodeEnvelope(String raw) {
     throw const PayloadException('缺少 deviceId');
   }
   final deviceName = map['deviceName'];
+  // 账号缺失时按空串处理：旧备份（pnote-bundle/1）转成的 state 没有这一项，
+  // 而 /7 及更早的对端会被 proto 检查挡住。监听端仍会拒绝空账号。
+  final account = map['account'] is String ? map['account'] as String : '';
   final tasksRaw = map['tasks'];
   if (tasksRaw is! List) throw const PayloadException('tasks 必须是数组');
 
@@ -228,6 +241,7 @@ SyncEnvelope decodeEnvelope(String raw) {
       tasks: tasks,
       purged: purged,
     ),
+    account: account,
     notes: notes,
     want: want,
   );
@@ -314,23 +328,34 @@ BlobsDone decodeBlobsDone(String raw) {
   return BlobsDone(want: want, skipped: skipped is int ? skipped : 0);
 }
 
-/// 回执帧。
-String encodeAck({required String deviceId, required bool ok, String? message}) {
+/// 回执帧。1.51 起拒绝时可以带上本机账号，拨号方好把提示写清楚。
+String encodeAck({
+  required String deviceId,
+  required bool ok,
+  String? message,
+  String? account,
+}) {
   return jsonEncode(<String, Object?>{
     'proto': kProto,
     'type': kTypeAck,
     'deviceId': deviceId,
     'ok': ok,
     'message': ?message,
+    'account': ?account,
   });
 }
 
 /// 回执帧的内容。字段缺省时按「成功」处理（老版本可能不带 message）。
-({bool ok, String? message}) decodeAck(String raw) {
+({bool ok, String? message, String? account}) decodeAck(String raw) {
   final root = _decodeRoot(raw, kTypeAck);
   final ok = root['ok'];
   final message = root['message'];
-  return (ok: ok != false, message: message is String ? message : null);
+  final account = root['account'];
+  return (
+    ok: ok != false,
+    message: message is String ? message : null,
+    account: account is String ? account : null,
+  );
 }
 
 /// 判断一帧的类型（不认识时返回 null），供多帧会话分发。

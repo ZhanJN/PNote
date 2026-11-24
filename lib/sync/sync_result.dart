@@ -21,6 +21,10 @@ enum SyncFailure {
   /// 对方回的数据不是本协议的（版本不一致或数据损坏）。
   protocol,
 
+  /// 对端在另一个账号下（1.51）。同名才同步，所以这不是错误操作，
+  /// 只是「这台不是给你的」，提示要温和。
+  account,
+
   /// 本机数据库出错。
   localError,
 }
@@ -64,6 +68,7 @@ class SyncResult {
         '发现了设备但连不上：可能是防火墙拦住了，或对方刚关掉 App$extra',
       SyncFailure.timeout => '对方没有及时回复：网络可能很慢，稍后再试$extra',
       SyncFailure.protocol => '对方和你不是同一个版本，或数据损坏了$extra',
+      SyncFailure.account => '对方的账号和你不同，不能同步$extra',
       SyncFailure.localError => '本机保存失败：请重启 App 再试$extra',
     };
   }
@@ -76,6 +81,7 @@ class SyncResult {
         SyncFailure.connectFailed => '连不上',
         SyncFailure.timeout => '连接超时',
         SyncFailure.protocol => '版本不一致',
+        SyncFailure.account => '账号不同',
         SyncFailure.localError => '本机保存失败',
       };
 

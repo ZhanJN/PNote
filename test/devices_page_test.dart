@@ -59,6 +59,11 @@ void main() {
   }
 
   Future<void> boot(WidgetTester tester) async {
+    // 1.51 加了「账号」行，默认 800×600 会把页面底部的说明挤出视口。
+    tester.view.physicalSize = const Size(1200, 2000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       MaterialApp(home: DevicesPage(dao: dao)),
     );
@@ -102,7 +107,7 @@ void main() {
   testWidgets('没有对端时给出可操作的提示，而不是一片空白', (tester) async {
     await boot(tester);
 
-    expect(find.textContaining('同一局域网内的其它设备（0）'), findsOneWidget);
+    expect(find.textContaining('同一局域网内的其它设备（0 台同账号）'), findsOneWidget);
     expect(find.text('同步未启用，看不到其它设备。'), findsOneWidget);
 
     await teardownPage(tester);

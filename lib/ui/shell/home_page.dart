@@ -79,8 +79,8 @@ class _HomePageState extends State<HomePage>
     final sync = widget.sync;
     if (sync != null) {
       unawaited(sync.start());
-      _peerSub = sync.peerChanges.listen((list) {
-        if (mounted) setState(() => _peers = list);
+      _peerSub = sync.peerChanges.listen((_) {
+        if (mounted) setState(() => _peers = sync.peers);
       });
       _appliedSub = sync.applied.listen((applied) async {
         await _tasksKey.currentState?.reload();
@@ -255,7 +255,10 @@ class _HomePageState extends State<HomePage>
     if (sync == null) return '同步未启用';
     if (sync.startError != null) return '同步启动失败';
     final count = _peers.length;
-    if (count == 0) return '还没发现设备';
+    if (count == 0) {
+      final others = sync.otherAccountPeers.length;
+      return others > 0 ? '发现 $others 台其它账号' : '还没发现设备';
+    }
     if (count == 1) return '发现 ${_peers.first.deviceName}';
     final names = _peers.map((p) => p.deviceName).toSet();
     if (names.length <= 3) return '发现 ${names.join('、')}';
@@ -266,7 +269,13 @@ class _HomePageState extends State<HomePage>
     final sync = widget.sync;
     if (sync == null) return '同步未启用';
     if (sync.startError != null) return sync.startError!;
-    if (_peers.isEmpty) return '按下后会在同一 Wi‑Fi 里找所有开着 PNote 的设备';
+    if (_peers.isEmpty) {
+      final others = sync.otherAccountPeers.length;
+      if (others > 0) {
+        return '发现了 $others 台其它账号的设备；把两边的账号名改成一样才能同步';
+      }
+      return '按下后会在同一 Wi‑Fi 里找所有开着 PNote 的设备';
+    }
     if (_peers.length == 1) {
       return '与 ${_peers.first.deviceName} 互换修改（${_peers.first.host}）';
     }

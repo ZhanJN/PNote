@@ -7,6 +7,7 @@ import 'package:pnote/data/db.dart';
 import 'package:pnote/data/task_dao.dart';
 import 'package:pnote/notes/notes_sync.dart';
 import 'package:pnote/platform/keep_alive.dart';
+import 'package:pnote/sync/account.dart';
 import 'package:pnote/sync/sync_service.dart';
 import 'package:pnote/theme/theme.dart';
 
@@ -33,6 +34,7 @@ Future<void> main() async {
       dao: dao,
       deviceName: defaultDeviceName(),
       notes: notesSync.toChannel(),
+      account: normalizeAccount(await dao.readSetting(kAccountKey) ?? kDefaultAccount),
     );
     // 先显示界面，再补后台保活与通知权限：这两步要弹系统对话框，
     // 不能挡在首屏前面（也失败得起 —— 见 BackgroundKeepAlive 里的说明）。

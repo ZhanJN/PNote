@@ -83,7 +83,7 @@ void main() {
     expect(tasks.single.duePrecision, DuePrecision.none.code);
   });
 
-  test('时间字段随 pnote-sync/7 往返', () async {
+  test('时间字段随 pnote-sync/8 往返', () async {
     final a = await newDao();
     final b = await newDao();
     final id = await a.addTask('复习数学');
@@ -98,7 +98,7 @@ void main() {
     final wire = encodeState(await a.exportState(deviceName: 'A'));
     final decoded = decodeState(wire);
     expect(wire, contains('"proto":"$kProto"'));
-    expect(kProto, 'pnote-sync/7');
+    expect(kProto, 'pnote-sync/8');
 
     await b.applyRemote(decoded);
     final tasks = await b.visibleTasks();

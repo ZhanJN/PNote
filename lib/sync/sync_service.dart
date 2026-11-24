@@ -18,6 +18,7 @@ import 'dart:io' show stderr;
 
 import 'package:pnote/data/models.dart';
 import 'package:pnote/data/task_dao.dart';
+import 'package:pnote/sync/account.dart';
 import 'package:pnote/sync/discovery.dart';
 import 'package:pnote/sync/merge.dart';
 import 'package:pnote/sync/notes_channel.dart';
@@ -39,13 +40,29 @@ class SyncService {
     required this.dao,
     required this.deviceName,
     this.notes,
-  });
+    String? account,
+  }) {
+    _account = account;
+  }
 
   final TaskDao dao;
   final String deviceName;
 
   /// 笔记同步通道（1.47）。为 null 时只同步任务。
   final NotesChannel? notes;
+
+  /// 当前账号名（1.51）。null 表示还没从 meta 读出来，[start] 时补读。
+  String? _account;
+
+  /// 当前账号。对界面/服务端始终是有效值（空时退回默认账号）。
+  String get account => normalizeAccount(_account ?? kDefaultAccount);
+
+  /// 改账号：只改内存里的名字 + 让广播立刻带新名字，不重启服务。
+  /// 落库由调用方负责（设置页写 meta），这样失败时不会两边不一致。
+  void setAccount(String name) {
+    _account = normalizeAccount(name);
+    _discovery?.account = _account!;
+  }
 
   SyncServer? _server;
   LanDiscovery? _discovery;
@@ -68,7 +85,19 @@ class SyncService {
   /// 当前能看见的对端列表（变化时推一次）。
   Stream<List<Peer>> get peerChanges => _peers.stream;
 
-  List<Peer> get peers => _discovery?.peers ?? const [];
+  List<Peer> get peers => [for (final p in _discovery?.peers ?? const <Peer>[])
+    if (_isSameAccount(p)) p];
+
+  /// 广播里听见了、但账号不同的设备（不参与同步，界面单独列出来）。
+  List<Peer> get otherAccountPeers => [
+        for (final p in _discovery?.peers ?? const <Peer>[])
+          if (!_isSameAccount(p)) p,
+      ];
+
+  /// 扫描兜底找到的候选还没有账号信息（account 为空），先放行去拨号，
+  /// 真正的账号由 state 报文回来时校验。
+  bool _isSameAccount(Peer peer) =>
+      peer.account.isEmpty || peer.account == account;
 
   String get deviceId => dao.clock.deviceId;
 
@@ -81,11 +110,15 @@ class SyncService {
     if (_started || _startError != null) return;
     var step = '启动';
     try {
+      _account ??= normalizeAccount(
+        await dao.readSetting(kAccountKey) ?? kDefaultAccount,
+      );
       step = '打开 WebSocket 端口';
       final server = SyncServer(
         deviceId: deviceId,
         onRemoteState: _onRemoteState,
         notes: notes,
+        accountOf: () => account,
       );
       await server.start();
       _server = server;
@@ -95,6 +128,7 @@ class SyncService {
         deviceId: deviceId,
         deviceName: deviceName,
         servicePort: server.boundPort!,
+        account: account,
       );
       await discovery.start();
       _discovery = discovery;
@@ -157,9 +191,19 @@ class SyncService {
         dao: dao,
         deviceName: deviceName,
         notes: notes,
+        account: account,
         collectPeers: (pass) => _collectPeers(pass, discoveryWait),
       );
       if (results.isEmpty) {
+        final others = otherAccountPeers.length;
+        if (others > 0) {
+          return SyncBatch.single(
+            SyncResult.failed(
+              SyncFailure.account,
+              detail: '发现 $others 台其它账号',
+            ),
+          );
+        }
         return SyncBatch.single(const SyncResult.failed(SyncFailure.noPeer));
       }
       return SyncBatch(results);
