@@ -16,12 +16,25 @@ import 'package:pnote/notes/notes_groups.dart';
 import 'package:pnote/notes/notes_model.dart';
 import 'package:pnote/notes/notes_paths.dart';
 
-/// 组内顺序文件的文件名（放在库根，点开头所以不会被当成笔记）。
-const String kOrderFileName = '.order.json';
+/// 旧版（1.48–1.53）按月记顺序的文件名。
+///
+/// 1.54 起手动顺序改记在 `.groups.json` 的 `order` 里；这个文件只为兼容
+/// 老库留着（同步层仍跳过它，不会传到别的设备）。
+const String kLegacyOrderFileName = '.order.json';
 
-/// 月分组键（`2026-11`）：列表按月分组，拖拽顺序按组记在 [kOrderFileName] 里。
-String monthKeyOf(DateTime time) =>
-    '${time.year}-${time.month.toString().padLeft(2, '0')}';
+/// 1.59：标题 / 预览的读盘缓存。
+///
+/// 文件没改（mtime + size 相同）就不重新读；切页、搜索、同步后重扫都受益。
+class _NoteHead {
+  const _NoteHead(this.mtimeMs, this.size, this.title, this.preview);
+
+  final int mtimeMs;
+  final int size;
+  final String title;
+  final String preview;
+}
+
+final Map<String, _NoteHead> _headCache = <String, _NoteHead>{};
 
 /// 文件操作失败时抛出，message 是能直接给用户看的短句。
 class NotesIoException implements Exception {
@@ -40,7 +53,10 @@ class NotesStore {
   // ---------------------------------------------------------------- 读
 
   /// 扫描整个库（跳过 `.trash`、`.assets` 和任何点目录）。
-  Future<List<NoteFile>> list() async {
+  ///
+  /// 1.59：标题与预览按文件 mtime / size 缓存，切页重扫时不再每篇都读一遍；
+  /// [withPreview] 为 true 时顺便取「标题后第一段正文」当列表预览。
+  Future<List<NoteFile>> list({bool withPreview = false}) async {
     final root = await notesRoot();
     final out = <NoteFile>[];
     await for (final entity in root.list(recursive: true, followLinks: false)) {
@@ -50,86 +66,59 @@ class NotesStore {
       if (rel.split('/').any((part) => part.startsWith('.'))) continue;
       final stat = await entity.stat();
       final name = p.basename(rel);
+      final head = await _readHead(
+        entity,
+        name,
+        stat.modified.millisecondsSinceEpoch,
+        stat.size,
+      );
       out.add(NoteFile(
         relPath: rel,
-        title: await _readTitle(entity, name),
+        title: head.title,
         createdAt: parseStamp(name) ?? stat.modified,
         modified: stat.modified,
         size: stat.size,
+        preview: withPreview ? head.preview : '',
       ));
     }
     out.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    final order = await readOrder();
-    if (order.isEmpty) return out;
-    // 拖拽排出来的组内顺序优先；没进过顺序表的新笔记仍然排在本月最上面。
-    final rank = <String, int>{};
-    order.forEach((key, ids) {
-      for (var i = 0; i < ids.length; i++) {
-        rank['$key|${ids[i]}'] = i;
-      }
-    });
-    out.sort((a, b) {
-      final groupA = monthKeyOf(a.createdAt);
-      final groupB = monthKeyOf(b.createdAt);
-      if (groupA != groupB) return groupB.compareTo(groupA);
-      final ra = rank['$groupA|${a.relPath}'];
-      final rb = rank['$groupB|${b.relPath}'];
-      if (ra != null && rb != null) return ra.compareTo(rb);
-      if (ra != null) return 1;
-      if (rb != null) return -1;
-      return b.createdAt.compareTo(a.createdAt);
-    });
     return out;
-  }
-
-  // ------------------------------------------------------------ 列表顺序
-
-  /// 用户拖出来的组内顺序：`{"2026-11": ["2026/11/xxx.md", ...]}`。
-  ///
-  /// 存在库根的 [kOrderFileName]（点文件，扫描 .md 时会跳过）。读不到或者
-  /// 内容坏了都只返回空表 —— 顺序坏了顶多回到「时间倒序」，绝不能让
-  /// 笔记库打不开。
-  Future<Map<String, List<String>>> readOrder() async {
-    final root = await notesRoot();
-    final file = File(p.join(root.path, kOrderFileName));
-    if (!await file.exists()) return <String, List<String>>{};
-    try {
-      final data = jsonDecode(await file.readAsString());
-      if (data is! Map) return <String, List<String>>{};
-      final out = <String, List<String>>{};
-      data.forEach((key, value) {
-        if (key is String && value is List) {
-          out[key] = [
-            for (final item in value)
-              if (item is String) item,
-          ];
-        }
-      });
-      return out;
-    } catch (_) {
-      return <String, List<String>>{};
-    }
-  }
-
-  /// 记下某个分组（`2026-11`）的新顺序，其余分组原样保留。
-  Future<void> writeOrder(String groupKey, List<String> ids) async {
-    final root = await notesRoot();
-    final order = await readOrder();
-    order[groupKey] = List<String>.from(ids);
-    final file = File(p.join(root.path, kOrderFileName));
-    await file.parent.create(recursive: true);
-    await _writeAtomic(
-      file,
-      const JsonEncoder.withIndent('  ').convert(order),
-    );
   }
 
   // ---------------------------------------------------------------- 组
 
+  /// 读组清单，并在第一次打开旧格式（v1 多对多 / v2 单组）时迁移到当前版本：
+  ///
+  /// * 旧文件先备份成 `.groups.v<旧版本>.bak`（只备份一次）；
+  /// * 迁移规则在 [parseGroups]：一篇最多一个组，按旧 JSON 的先后先到先得；
+  /// * 迁完立刻写回当前版本，下一次同步就会把新格式传给另一台设备。
+  Future<NoteGroups> readGroupsMigrated() async {
+    final root = await notesRoot();
+    final file = File(p.join(root.path, kGroupsFileName));
+    final groups = readGroupsSync(root);
+    if (!await file.exists()) return groups;
+    try {
+      final raw = await file.readAsString();
+      final decoded = jsonDecode(raw);
+      final version = decoded is Map ? decoded['version'] : null;
+      if (version == kGroupsVersion) return groups;
+      final tag = version is num ? version.toInt() : 1;
+      final backup = File(p.join(root.path, '.groups.v$tag.bak'));
+      if (!await backup.exists()) {
+        await backup.parent.create(recursive: true);
+        await backup.writeAsString(raw, flush: true);
+      }
+      await writeGroups(groups);
+    } catch (_) {
+      // 读不出来就先用内存里的结果，绝不阻塞打开笔记库。
+    }
+    return groups;
+  }
+
   /// 读笔记组清单（库根 [kGroupsFileName]）。
   ///
-  /// 组 = 磁盘目录 + 这张清单的并集：目录里放着的 `.md` 自动归一级组，清单
-  /// 里可以额外把一篇文章同时挂到好几个组。清单是本机偏好（不同步）。
+  /// 1.54 起组只是清单里的标签：一篇笔记最多一个组，组不落成文件夹，
+  /// 清单本身随笔记同步（见 notes_sync）。
   Future<NoteGroups> readGroups() async {
     final root = await notesRoot();
     return readGroupsSync(root);
@@ -143,33 +132,21 @@ class NotesStore {
     await _writeAtomic(file, encodeGroups(groups));
   }
 
-  /// 把一篇笔记加进组（多组归属，物理文件不动）。
-  Future<void> addToGroup(String group, String relPath) async {
-    final name = group.trim();
-    if (name.isEmpty) return;
+  /// 把一篇笔记放进组（null = 移出到「未分组」）；文件本身不动。
+  ///
+  /// 1.54 起一篇笔记同时只会在一个组里：这里直接覆盖旧归属。
+  Future<void> addToGroup(String? group, String relPath) async {
     final groups = await readGroups();
-    final next = <String, List<String>>{
-      for (final key in groups.names) key: List<String>.of(groups.byGroup[key]!),
-    };
-    final bucket = next[name] ??= <String>[];
     final path = relPath.replaceAll('\\', '/');
-    if (!bucket.contains(path)) {
-      bucket.add(path);
-      bucket.sort();
-    }
-    await writeGroups(NoteGroups(next));
+    final name = (group ?? '').trim();
+    if (name.isNotEmpty && groups.groupNamed(name) == null) return;
+    await writeGroups(groups.withNoteGroup(path, name.isEmpty ? null : name));
   }
 
-  /// 把一篇笔记从某个组里移出（文件不动）。
-  Future<void> removeFromGroup(String group, String relPath) async {
+  /// 把一篇笔记移出它所在的组（文件不动）。
+  Future<void> removeFromGroup(String relPath) async {
     final groups = await readGroups();
-    if (!groups.byGroup.containsKey(group)) return;
-    final next = <String, List<String>>{
-      for (final key in groups.names) key: List<String>.of(groups.byGroup[key]!),
-    };
-    next[group]!.removeWhere((item) => item == relPath.replaceAll('\\', '/'));
-    if (next[group]!.isEmpty) next.remove(group);
-    await writeGroups(NoteGroups(next));
+    await writeGroups(groups.withNoteGroup(relPath.replaceAll('\\', '/'), null));
   }
 
   Future<String> read(String relPath) async {
@@ -290,7 +267,7 @@ class NotesStore {
       out.add(TrashEntry(
         relPath: rel,
         movedAt: stat.modified,
-        title: await _readTitle(entity, p.basename(rel)),
+        title: titleFromFileName(p.basename(rel)),
       ));
     }
     out.sort((a, b) => b.movedAt.compareTo(a.movedAt));
@@ -337,7 +314,7 @@ class NotesStore {
         relPath: p
             .relative(target, from: root.path)
             .replaceAll('\\', '/'),
-        title: await _readTitle(File(target), '$name.md'),
+        title: titleFromFileName('$name.md'),
         createdAt: created,
         modified: stat.modified,
         size: stat.size,
@@ -533,7 +510,17 @@ class NotesStore {
     return changed;
   }
 
-  Future<String> _readTitle(File file, String fileName) async {
+  Future<_NoteHead> _readHead(
+    File file,
+    String fileName,
+    int mtimeMs,
+    int size,
+  ) async {
+    final path = file.path;
+    final cached = _headCache[path];
+    if (cached != null && cached.mtimeMs == mtimeMs && cached.size == size) {
+      return cached;
+    }
     String text;
     try {
       final raf = await file.open();
@@ -544,15 +531,67 @@ class NotesStore {
         await raf.close();
       }
     } on FileSystemException {
-      return titleFromFileName(fileName);
+      final head = _NoteHead(mtimeMs, size, titleFromFileName(fileName), '');
+      _headCache[path] = head;
+      return head;
     }
-    for (final line in text.split('\n')) {
+    final lines = text.split('\n');
+    var title = titleFromFileName(fileName);
+    var preview = '';
+    var seenHeading = false;
+    for (final line in lines) {
       final trimmed = line.trim();
-      if (trimmed.isEmpty) continue;
-      if (trimmed.startsWith('# ')) return trimmed.substring(2).trim();
-      break; // 标题只认文件最前面那段
+      if (trimmed.isEmpty) {
+        if (seenHeading && preview.isNotEmpty) break;
+        continue;
+      }
+      if (trimmed.startsWith('```')) break;
+      if (!seenHeading) {
+        if (trimmed.startsWith('# ')) {
+          title = trimmed.substring(2).trim();
+          seenHeading = true;
+          continue;
+        }
+        // 没有 # 一级标题时，二级及以下标题也是正文的一部分：
+        // 去掉井号当摘要，而不是整行跳过（用户 1.62.1 反馈）。
+        seenHeading = true;
+      }
+      if (preview.isEmpty) {
+        preview = _previewOf(trimmed);
+        if (preview.isNotEmpty) break;
+      }
     }
-    return titleFromFileName(fileName);
+    final head = _NoteHead(mtimeMs, size, title, preview);
+    _headCache[path] = head;
+    return head;
+  }
+
+  /// 把一行 Markdown 洗成可读的一行预览（去掉标记、压空白、截断）。
+  static String _previewOf(String line) {
+    var s = line;
+    // 对齐块的 ::: 标记行本身没有可读内容，直接当空行。
+    if (RegExp(r'^:::\s*(left|center|right)?\s*$').hasMatch(s)) return '';
+    // 分割线同样没有可读内容。
+    if (RegExp(r'^(-{3,}|\*{3,}|_{3,})$').hasMatch(s)) return '';
+    // 表格行去掉竖线，至少能读成一句话。
+    if (s.startsWith('|')) s = s.replaceAll('|', ' ');
+    // 标题行（包括 ### 这种二级以下标题）去掉井号再当摘要。
+    s = s.replaceAll(RegExp(r'^#{1,6}\s*'), '');
+    s = s.replaceAll(RegExp(r'^[-*+]\s+\[[ xX]\]\s*'), '');
+    s = s.replaceAll(RegExp(r'^[-*+]\s+'), '');
+    s = s.replaceAll(RegExp(r'^\d+\.\s+'), '');
+    s = s.replaceAll(RegExp(r'^>\s*'), '');
+    s = s.replaceAll(RegExp(r'!\[\[([^\]]+)\]\]'), '');
+    s = s.replaceAllMapped(RegExp(r'\[\[([^\]]+)\]\]'), (m) => m.group(1) ?? '');
+    s = s.replaceAll(RegExp(r'!\[[^\]]*\]\([^)]*\)'), '');
+    s = s.replaceAllMapped(
+      RegExp(r'\[([^\]]*)\]\([^)]*\)'),
+      (m) => m.group(1) ?? '',
+    );
+    s = s.replaceAll(RegExp(r'[*_~`]'), '');
+    s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (s.length > 60) s = '${s.substring(0, 60)}…';
+    return s;
   }
 
   String _uniqueAssetName(Directory dir, String rawName) {

@@ -18,6 +18,7 @@ class NoteFile {
     required this.createdAt,
     required this.modified,
     required this.size,
+    this.preview = '',
   });
 
   final String relPath;
@@ -29,6 +30,10 @@ class NoteFile {
   final DateTime createdAt;
   final DateTime modified;
   final int size;
+
+  /// 1.59：标题下方的一行正文预览（标题行之后第一段非空文字）。
+  /// 列表关闭预览时为空串，不读正文。
+  final String preview;
 
   /// 去掉 `.md` 的库内路径。素材目录名 = `<id>.assets`。
   String get id =>
@@ -48,6 +53,7 @@ class NoteFile {
       createdAt: createdAt,
       modified: modified ?? this.modified,
       size: size ?? this.size,
+      preview: preview,
     );
   }
 }

@@ -19,7 +19,8 @@ enum NoteMenuAction {
   open,
   rename,
   asset,
-  groups,
+  moveToGroup,
+  pin,
   reveal,
   multiSelect,
   delete,
@@ -28,16 +29,18 @@ enum NoteMenuAction {
 /// 弹出某一行的笔记菜单。
 ///
 /// [canReveal] 为 false 时（比如拿不到笔记载体）不显示「在文件夹中显示」。
+/// [pinned] 为真时显示「取消置顶」，否则显示「置顶到组内最前」。
 Future<NoteMenuAction?> showNoteMenu({
   required BuildContext context,
   required NoteFile note,
   required TaskMenuAnchor anchor,
   required bool canReveal,
+  bool pinned = false,
 }) {
   final geo = menuRectFor(
     context,
     anchor,
-    (canReveal ? 348.0 : 300.0),
+    (canReveal ? 396.0 : 348.0),
   );
   return showMenu<NoteMenuAction>(
     context: context,
@@ -71,12 +74,21 @@ Future<NoteMenuAction?> showNoteMenu({
         ),
       ),
       const PopupMenuItem(
-        value: NoteMenuAction.groups,
+        value: NoteMenuAction.moveToGroup,
         child: ListTile(
           dense: true,
           contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.collections_bookmark_outlined),
-          title: Text('加入组…'),
+          leading: Icon(Icons.drive_file_move_outline),
+          title: Text('移动到组…'),
+        ),
+      ),
+      PopupMenuItem(
+        value: NoteMenuAction.pin,
+        child: ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.push_pin_outlined),
+          title: Text(pinned ? '取消置顶' : '置顶到组内最前'),
         ),
       ),
       if (canReveal)

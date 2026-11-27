@@ -23,7 +23,8 @@ class _EmptyStore extends NotesStore {
   const _EmptyStore();
 
   @override
-  Future<List<NoteFile>> list() async => const <NoteFile>[];
+  Future<List<NoteFile>> list({bool withPreview = false}) async =>
+      const <NoteFile>[];
 }
 void main() {
   setUpAll(sqfliteFfiInit);

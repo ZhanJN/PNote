@@ -24,6 +24,8 @@ import 'package:pnote/notes/notes_model.dart';
 import 'package:pnote/notes/notes_paths.dart';
 import 'package:pnote/notes/notes_search.dart';
 import 'package:pnote/notes/notes_store.dart';
+import 'package:pnote/ui/settings/notes_prefs.dart';
+import 'package:pnote/ui/common/horizontal_chip_bar.dart';
 import 'package:pnote/ui/common/minute_refresh.dart';
 import 'package:pnote/ui/notes/note_editor_page.dart';
 import 'package:pnote/ui/notes/note_list_body.dart';
@@ -31,8 +33,12 @@ import 'package:pnote/ui/notes/note_menu.dart';
 import 'package:pnote/ui/common/rename_dialog.dart';
 import 'package:pnote/ui/tasks/task_menu.dart';
 
-/// 1.48：笔记页的视图顺序 =「全部」→ 各组 → 四种时间视图。
-enum NotesListMode { all, group, createdAsc, createdDesc, modifiedAsc, modifiedDesc }
+/// 1.54：笔记列表只有「排序方式」是视图状态，不落盘。
+///
+/// * [manual] 是唯一持久顺序（存在 `.groups.json` 的 `order` 里），拖拽只改它；
+/// * 其它四种只是**临时**把当前列表按时间排一下，切回手动就恢复原顺序，
+///   任何时候都不会写盘覆盖手动顺序。
+enum NotesSort { manual, createdAsc, createdDesc, modifiedAsc, modifiedDesc }
 
 class NotesView extends StatefulWidget {
   const NotesView({super.key, this.store = const NotesStore(), this.onCountChanged});
@@ -60,19 +66,26 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
   String? _error;
   Timer? _searchDebounce;
 
-  /// 1.48：当前视图。「全部」与组视图按月分组、可拖拽；时间视图平铺、禁拖拽。
-  NotesListMode _mode = NotesListMode.all;
-  String? _group;
+  /// 1.54：`null` = 全部；否则只看这个组。
+  String? _filterGroup;
+  /// 排序视图：手动是持久顺序，其它只是临时显示。
+  NotesSort _sort = NotesSort.manual;
   NoteGroups _groupIndex = const NoteGroups.empty();
 
   @override
   void initState() {
     super.initState();
+    noteListPreview.addListener(_onPreviewPrefChanged);
     _reload();
+  }
+
+  void _onPreviewPrefChanged() {
+    if (mounted) _reload();
   }
 
   @override
   void dispose() {
+    noteListPreview.removeListener(_onPreviewPrefChanged);
     _searchDebounce?.cancel();
     _search.dispose();
     super.dispose();
@@ -86,16 +99,16 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
     // 避免「点一下笔记页先闪一圈加载」。
     if (mounted && !_everLoaded) setState(() => _loading = true);
     try {
-      final notes = await widget.store.list();
-      final root = await notesRoot();
-      final index = mergePhysical(root, await widget.store.readGroups(), notes);
+      final notes = await widget.store.list(
+        withPreview: noteListPreview.value,
+      );
+      final index = await widget.store.readGroupsMigrated();
       if (!mounted) return;
       setState(() {
         _notes = notes;
         _groupIndex = index;
-        if (_group != null && !index.topNames.contains(_group)) {
-          _mode = NotesListMode.all;
-          _group = null;
+        if (_filterGroup != null && index.groupNamed(_filterGroup!) == null) {
+          _filterGroup = null;
         }
         _loading = false;
         _everLoaded = true;
@@ -134,7 +147,9 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
     });
   }
 
-  Future<void> _create() async {
+  Future<void> _create({String? group}) async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    final target = group ?? _filterGroup;
     final name = await showDialog<String>(
       context: context,
       builder: (_) => const RenameDialog(initialTitle: '', title: '新建笔记'),
@@ -143,9 +158,10 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
     final title = (name ?? '').trim();
     try {
       final note = await widget.store.create(title.isEmpty ? '未命名笔记' : title);
-      // 1.48：在组视图里新建 → 文件仍落在年/月目录，但顺手加进这个组。
-      if (_mode == NotesListMode.group && _group != null) {
-        await widget.store.addToGroup(_group!, note.relPath);
+      // 1.54：在某个组里点「新建」→ 文件仍落在年/月目录，但直接归到这个组。
+      // 1.56：组标题上的「+」也可以直接指定组。
+      if (target != null) {
+        await widget.store.addToGroup(target, note.relPath);
       }
       await _reload();
       if (!mounted) return;
@@ -156,6 +172,8 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
   }
 
   Future<void> _open(NoteFile note, {String? anchor}) async {
+    // 1.56：进编辑器前先收键盘/焦点，回来时不会让搜索框又抢焦点、自动弹键盘。
+    FocusManager.instance.primaryFocus?.unfocus();
     await Navigator.of(context).push(MaterialPageRoute<void>(
       builder: (_) => NoteEditorPage(
         note: note,
@@ -165,6 +183,7 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
         initialAnchor: anchor,
       ),
     ));
+    FocusManager.instance.primaryFocus?.unfocus();
     await _reload();
   }
 
@@ -264,8 +283,8 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('删除这篇笔记？'),
-        content: Text('「${note.title}」会被移到笔记库的 .trash 目录，'
-            '文件还在，需要时可以自己去捞回来。'),
+        content: Text('「${note.title}」会被移到回收站，'
+            '之后可以在回收站的「笔记」页签里恢复。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -282,7 +301,7 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
     try {
       await widget.store.delete(note);
       await _reload();
-      _toast('已移到 .trash');
+      _toast('已移到回收站');
     } on NotesIoException catch (e) {
       _toast(e.message);
     }
@@ -312,14 +331,20 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
     });
   }
 
+  int get _visibleCount =>
+      _sections().fold<int>(0, (sum, group) => sum + group.notes.length);
+
   void _selectAll() {
+    final visible = [
+      for (final group in _sections()) ...group.notes,
+    ];
     setState(() {
-      if (_selected.length == _visible().length) {
+      if (_selected.length == visible.length) {
         _selected.clear();
       } else {
         _selected
           ..clear()
-          ..addAll(_visible().map((note) => note.relPath));
+          ..addAll(visible.map((note) => note.relPath));
       }
     });
   }
@@ -331,8 +356,7 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
       context: context,
       builder: (context) => AlertDialog(
         title: Text('删除选中的 $n 篇笔记？'),
-        content: const Text('会移到笔记库的 .trash 目录，之后可以在回收站的'
-            '「笔记」页签里恢复。'),
+        content: const Text('会移到回收站，之后可以在回收站的「笔记」页签里恢复。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -360,7 +384,7 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
         _selected.clear();
       });
       await _reload();
-      _toast('已把 $done 篇笔记移到 .trash');
+      _toast('已把 $done 篇笔记移到回收站');
     } on NotesIoException catch (e) {
       _toast('第 ${done + 1} 篇失败：${e.message}');
     } finally {
@@ -377,6 +401,7 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
       note: note,
       anchor: TaskMenuAnchor(rect: rect, at: at),
       canReveal: true,
+      pinned: _groupIndex.isPinnedNote(note.relPath),
     );
     if (!mounted) return;
     switch (action) {
@@ -386,8 +411,10 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
         await _rename(note);
       case NoteMenuAction.asset:
         await _insertAsset(note);
-      case NoteMenuAction.groups:
-        await _editGroups(note);
+      case NoteMenuAction.moveToGroup:
+        await _moveNote(note);
+      case NoteMenuAction.pin:
+        await _toggleNotePinned(note);
       case NoteMenuAction.reveal:
         await _reveal(note);
       case NoteMenuAction.multiSelect:
@@ -396,6 +423,21 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
         await _delete(note);
       case null:
         break;
+    }
+  }
+
+  /// 笔记置顶 / 取消置顶（组内排最前）。
+  Future<void> _toggleNotePinned(NoteFile note) async {
+    final pinned = _groupIndex.isPinnedNote(note.relPath);
+    try {
+      await widget.store.writeGroups(
+        _groupIndex.withNotePinned(note.relPath, !pinned),
+      );
+      await _reload();
+      if (!mounted) return;
+      _toast(pinned ? '已取消置顶' : '已置顶到组内最前');
+    } on NotesIoException catch (e) {
+      _toast(e.message);
     }
   }
 
@@ -457,7 +499,7 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
             TextButton(
               onPressed: _notes.isEmpty ? null : _selectAll,
               child: Text(
-                _selected.length == _visible().length && _visible().isNotEmpty
+                _selected.length == _visibleCount && _visibleCount > 0
                     ? '取消全选'
                     : '全选',
               ),
@@ -475,10 +517,27 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
               Expanded(child: _searchField()),
               const SizedBox(width: 8),
               // 1.42：用户反馈「没有新建按钮」——原来只有搜索框右侧一个小图标。
-              FilledButton.icon(
-                onPressed: _create,
-                icon: const Icon(Icons.add, size: 18),
-                label: const Text('新建'),
+              // 1.56：一个按钮管两件事（新建笔记 / 新建分组），少一次犹豫。
+              MenuAnchor(
+                menuChildren: [
+                  MenuItemButton(
+                    leadingIcon: const Icon(Icons.note_add_outlined, size: 18),
+                    onPressed: _create,
+                    child: const Text('新建笔记'),
+                  ),
+                  MenuItemButton(
+                    leadingIcon: const Icon(Icons.create_new_folder_outlined,
+                        size: 18),
+                    onPressed: () => _createGroup(),
+                    child: const Text('新建分组'),
+                  ),
+                ],
+                builder: (context, controller, child) => FilledButton.icon(
+                  onPressed: () =>
+                      controller.isOpen ? controller.close() : controller.open(),
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('新建'),
+                ),
               ),
             ],
           ),
@@ -534,73 +593,138 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
     );
   }
 
-  // ------------------------------------------------------- 视图条与组（1.48）
+  // ------------------------------------------------------- 视图条与组（1.54）
 
-  bool get _isTimeMode =>
-      _mode == NotesListMode.createdAsc ||
-      _mode == NotesListMode.createdDesc ||
-      _mode == NotesListMode.modifiedAsc ||
-      _mode == NotesListMode.modifiedDesc;
+  bool get _isManual => _sort == NotesSort.manual;
 
-  static const Map<NotesListMode, String> _timeLabels = {
-    NotesListMode.createdAsc: '创建 ↑',
-    NotesListMode.createdDesc: '创建 ↓',
-    NotesListMode.modifiedAsc: '修改 ↑',
-    NotesListMode.modifiedDesc: '修改 ↓',
-  };
+  String get _sortLabel => switch (_sort) {
+        NotesSort.manual => '手动',
+        NotesSort.createdAsc => '创建 ↑',
+        NotesSort.createdDesc => '创建 ↓',
+        NotesSort.modifiedAsc => '修改 ↑',
+        NotesSort.modifiedDesc => '修改 ↓',
+      };
 
-  /// 当前视图要显示的笔记。
-  ///
-  /// 「全部」直接用 `list()` 的顺序（含 `.order.json` 的手工顺序）；
-  /// 组视图按归属过滤，但保留同样的顺序；时间视图给排好序的副本。
-  List<NoteFile> _visible() {
-    switch (_mode) {
-      case NotesListMode.all:
-        return _notes;
-      case NotesListMode.group:
-        final picked = _groupIndex.notesUnder(_group ?? '');
-        return [
-          for (final note in _notes)
-            if (picked.contains(note.relPath)) note,
-        ];
-      case NotesListMode.createdAsc:
-        return [..._notes]..sort((a, b) => a.createdAt.compareTo(b.createdAt));
-      case NotesListMode.createdDesc:
-        return [..._notes]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      case NotesListMode.modifiedAsc:
-        return [..._notes]..sort((a, b) => a.modified.compareTo(b.modified));
-      case NotesListMode.modifiedDesc:
-        return [..._notes]..sort((a, b) => b.modified.compareTo(a.modified));
-    }
+  List<NoteFile> _poolFor(String key) {
+    final name = key.isEmpty ? null : key;
+    return [
+      for (final note in _notes)
+        if (_groupIndex.groupOf(note.relPath) == name) note,
+    ];
   }
 
-  /// 横向滚动的视图条：「全部」→ 各组 →「新建组」→ 四种时间视图。
+  /// 手动顺序：清单里的顺序优先，新笔记按创建时间倒序接在后面。
+  List<String> _manualOrder(String key, List<NoteFile> pool) {
+    final byPath = {for (final note in pool) note.relPath: note};
+    final ids = <String>[];
+    for (final id in _groupIndex.order[key] ?? const <String>[]) {
+      if (byPath.containsKey(id) && !ids.contains(id)) ids.add(id);
+    }
+    final rest = [
+      for (final note in pool)
+        if (!ids.contains(note.relPath)) note,
+    ]..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    ids.addAll(rest.map((note) => note.relPath));
+    return ids;
+  }
+
+  List<NoteFile> _sectionNotes(String key) {
+    final pool = _poolFor(key);
+    if (!_isManual) {
+      pool.sort(switch (_sort) {
+        NotesSort.createdAsc => (a, b) => a.createdAt.compareTo(b.createdAt),
+        NotesSort.createdDesc => (a, b) => b.createdAt.compareTo(a.createdAt),
+        NotesSort.modifiedAsc => (a, b) => a.modified.compareTo(b.modified),
+        NotesSort.modifiedDesc => (a, b) => b.modified.compareTo(a.modified),
+        NotesSort.manual => (a, b) => 0,
+      });
+      return _pinnedFirst(pool);
+    }
+    final byPath = {for (final note in pool) note.relPath: note};
+    final ordered = [
+      for (final id in _manualOrder(key, pool)) byPath[id]!,
+    ];
+    return _pinnedFirst(ordered);
+  }
+
+  /// 置顶的笔记永远排在本组最前；其余保持当前排序（1.55）。
+  List<NoteFile> _pinnedFirst(List<NoteFile> notes) {
+    final pinned = <NoteFile>[];
+    final rest = <NoteFile>[];
+    for (final note in notes) {
+      if (_groupIndex.isPinnedNote(note.relPath)) {
+        pinned.add(note);
+      } else {
+        rest.add(note);
+      }
+    }
+    return <NoteFile>[...pinned, ...rest];
+  }
+
+  /// 当前要画的组分区（1.55：按树展开，子组缩进）。
+  ///
+  /// * 「全部」：一级组按置顶 + 手动顺序，组内先画自己的笔记，再递归子组；
+  ///   未分组永远在最后。
+  /// * 组视图：显示这个组及其全部下级组（折叠状态各管各的）。
+  List<NoteGroup> _sections() {
+    final out = <NoteGroup>[];
+    void emitGroup(String name, int depth) {
+      final def = _groupIndex.groupNamed(name);
+      if (def == null) return;
+      out.add(NoteGroup(
+        key: def.name,
+        title: def.name,
+        notes: _sectionNotes(def.name),
+        color: def.color,
+        collapsed: def.collapsed,
+        depth: depth,
+        pinned: def.pinned,
+      ));
+      if (def.collapsed) return;
+      for (final child in _groupIndex.childrenOf(def.name)) {
+        emitGroup(child.name, depth + 1);
+      }
+    }
+
+    if (_filterGroup != null) {
+      final def = _groupIndex.groupNamed(_filterGroup!);
+      if (def != null) emitGroup(def.name, 0);
+      return out;
+    }
+    for (final def in _groupIndex.roots) {
+      emitGroup(def.name, 0);
+    }
+    final ungrouped = _sectionNotes('');
+    if (ungrouped.isNotEmpty) {
+      out.add(NoteGroup(
+        key: '',
+        title: '未分组',
+        notes: ungrouped,
+        ungrouped: true,
+        collapsible: false,
+      ));
+    }
+    return out;
+  }
+
   Widget _chipsRow() {
-    final names = _groupIndex.topNames;
-    return SizedBox(
+    return HorizontalChipBar(
       height: 44,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        children: [
-          _chip(
-            '全部',
-            _mode == NotesListMode.all,
-            () => _setMode(NotesListMode.all),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      children: [
+        _chip('全部', _filterGroup == null, () => _setFilter(null)),
+        // 视图只放一级组：子组在列表里以缩进的组标题出现（1.55）。
+        for (final def in _groupIndex.roots) _groupChip(def),
+        Padding(
+          padding: const EdgeInsets.only(right: 6),
+          child: ActionChip(
+            avatar: const Icon(Icons.create_new_folder_outlined, size: 16),
+            label: const Text('新建组'),
+            onPressed: _createGroup,
           ),
-          for (final name in names) _groupChip(name),
-          Padding(
-            padding: const EdgeInsets.only(right: 6),
-            child: ActionChip(
-              avatar: const Icon(Icons.create_new_folder_outlined, size: 16),
-              label: const Text('新建组'),
-              onPressed: _createGroup,
-            ),
-          ),
-          for (final entry in _timeLabels.entries)
-            _chip(entry.value, _mode == entry.key, () => _setMode(entry.key)),
-        ],
-      ),
+        ),
+        _sortButton(),
+      ],
     );
   }
 
@@ -615,74 +739,229 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
     );
   }
 
-  /// 组视图的 chip：长按改名/删组。
-  Widget _groupChip(String name) {
+  /// 组 chip：点一下只看这个组；长按改名 / 换色 / 置顶 / 子组 / 上下移 / 删除。
+  Widget _groupChip(NoteGroupDef def) {
+    final scheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.only(right: 6),
       child: GestureDetector(
-        onLongPress: () => _groupMenu(name),
+        onLongPress: () => _groupMenu(def),
         child: ChoiceChip(
-          label: Text(name),
-          selected: _mode == NotesListMode.group && _group == name,
-          onSelected: (_) => _setMode(NotesListMode.group, group: name),
+          avatar: Icon(
+            def.pinned ? Icons.push_pin : Icons.folder_outlined,
+            size: 16,
+            color: def.pinned ? scheme.primary : noteGroupColor(def.color),
+          ),
+          label: Text(def.name),
+          selected: _filterGroup == def.name,
+          onSelected: (_) => _setFilter(def.name),
         ),
       ),
     );
   }
 
-  void _setMode(NotesListMode mode, {String? group}) {
+  Widget _sortButton() {
+    final scheme = Theme.of(context).colorScheme;
+    return PopupMenuButton<NotesSort>(
+      tooltip: '排序方式',
+      initialValue: _sort,
+      onSelected: _setSort,
+      itemBuilder: (_) => [
+        for (final value in NotesSort.values)
+          PopupMenuItem(
+            value: value,
+            child: Row(
+              children: [
+                Icon(
+                  value == NotesSort.manual
+                      ? Icons.drag_indicator
+                      : Icons.schedule,
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Text(switch (value) {
+                  NotesSort.manual => '手动顺序（可拖拽）',
+                  NotesSort.createdAsc => '创建时间 ↑',
+                  NotesSort.createdDesc => '创建时间 ↓',
+                  NotesSort.modifiedAsc => '修改时间 ↑',
+                  NotesSort.modifiedDesc => '修改时间 ↓',
+                }),
+              ],
+            ),
+          ),
+      ],
+      child: Container(
+        margin: const EdgeInsets.only(right: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          border: Border.all(color: scheme.outlineVariant),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.swap_vert, size: 16, color: scheme.onSurfaceVariant),
+            const SizedBox(width: 4),
+            Text('排序：$_sortLabel'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _setFilter(String? group) {
     setState(() {
-      _mode = mode;
-      if (mode == NotesListMode.group) {
-        final picked = group ?? _group;
-        _group = picked ?? (_groupIndex.topNames.isEmpty ? null : _groupIndex.topNames.first);
-        if (_group == null) _mode = NotesListMode.all;
-      }
+      _filterGroup = group;
       _selecting = false;
       _selected.clear();
     });
   }
 
-  /// 新建组 = 在笔记库根下真建一个文件夹（用户说的「纯文件夹那种」）。
-  Future<void> _createGroup() async {
+  void _setSort(NotesSort sort) {
+    setState(() {
+      _sort = sort;
+      _selecting = false;
+      _selected.clear();
+    });
+  }
+
+  Future<void> _toggleCollapse(String key) async {
+    if (key.isEmpty) return;
+    final def = _groupIndex.groupNamed(key);
+    if (def == null) return;
+    final next = _groupIndex.withCollapsed(key, !def.collapsed);
+    setState(() => _groupIndex = next);
+    try {
+      await widget.store.writeGroups(next);
+    } on NotesIoException catch (e) {
+      _toast(e.message);
+    }
+  }
+
+  /// 新建组：只是清单里多一条标签，不再在库根建文件夹。
+  /// [parent] 非空表示在某个组下面建子组（1.55）。
+  Future<void> _createGroup({String parent = ''}) async {
     final name = await showDialog<String>(
       context: context,
-      builder: (_) => const RenameDialog(initialTitle: '', title: '新建组'),
+      builder: (_) => RenameDialog(
+        initialTitle: '',
+        title: parent.isEmpty ? '新建组' : '在「$parent」下新建子组',
+      ),
     );
     if (!mounted) return;
     final clean = (name ?? '').trim();
     if (clean.isEmpty) return;
-    if (isYearDir(clean) || isInternalName(clean)) {
-      _toast('「$clean」不能用：组名不能是年份数字，也不能用点开头的名字');
+    if (_groupIndex.groupNamed(clean) != null) {
+      _toast('已经有叫「$clean」的组了');
       return;
     }
+    final color = _groupIndex.groups.length % kGroupColorCount;
     try {
-      final root = await notesRoot();
-      final dir = Directory(p.join(root.path, clean));
-      if (!await dir.exists()) await dir.create(recursive: true);
+      await widget.store.writeGroups(
+        _groupIndex.addGroup(clean, color: color, parent: parent),
+      );
       await _reload();
       if (!mounted) return;
-      setState(() {
-        _mode = NotesListMode.group;
-        _group = clean;
-      });
-      _toast('已新建组「$clean」（就是笔记库里的一个文件夹）');
-    } on FileSystemException catch (e) {
-      _toast('建不了组：${e.message}');
+      setState(() => _filterGroup = clean);
+      _toast(parent.isEmpty
+          ? '已新建组「$clean」'
+          : '已在「$parent」下新建子组「$clean」');
+    } on NotesIoException catch (e) {
+      _toast(e.message);
     }
   }
 
-  Future<void> _groupMenu(String name) async {
+  /// 组标题右侧「+」：直接在这个组里新建（1.56）。
+  Future<void> _createInGroup(NoteGroup group) async {
+    await _create(group: group.ungrouped ? null : group.key);
+  }
+
+  /// 列表里长按 / 右键组标题：与顶部组标签菜单同一套（1.56）。
+  Future<void> _openGroupMenu(
+    NoteGroup group,
+    Rect rect,
+    Offset? at,
+  ) async {
+    final def = _groupIndex.groupNamed(group.key);
+    if (def != null) {
+      await _groupMenu(def);
+      return;
+    }
+    // 「未分组」没有组属性，只给「新建笔记」。
     final action = await showDialog<String>(
       context: context,
       builder: (ctx) => SimpleDialog(
-        title: Text('组「$name」'),
+        title: const Text('未分组'),
         children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'new'),
+            child: const ListTile(
+              leading: Icon(Icons.note_add_outlined),
+              title: Text('新建笔记'),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || action != 'new') return;
+    await _create(group: null);
+  }
+
+  Future<void> _groupMenu(NoteGroupDef def) async {
+    final action = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text('组「${def.name}」'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'new'),
+            child: ListTile(
+              leading: const Icon(Icons.note_add_outlined),
+              title: Text('在「${def.name}」里新建笔记'),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'pin'),
+            child: ListTile(
+              leading: Icon(
+                def.pinned ? Icons.push_pin_outlined : Icons.push_pin,
+              ),
+              title: Text(def.pinned ? '取消置顶' : '置顶（排到同级最前）'),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'subgroup'),
+            child: const ListTile(
+              leading: Icon(Icons.create_new_folder_outlined),
+              title: Text('新建子组…'),
+            ),
+          ),
           SimpleDialogOption(
             onPressed: () => Navigator.pop(ctx, 'rename'),
             child: const ListTile(
               leading: Icon(Icons.drive_file_rename_outline),
               title: Text('重命名组'),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'color'),
+            child: const ListTile(
+              leading: Icon(Icons.palette_outlined),
+              title: Text('改颜色'),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'up'),
+            child: const ListTile(
+              leading: Icon(Icons.arrow_upward),
+              title: Text('上移一组'),
+            ),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, 'down'),
+            child: const ListTile(
+              leading: Icon(Icons.arrow_downward),
+              title: Text('下移一组'),
             ),
           ),
           SimpleDialogOption(
@@ -696,60 +975,126 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
       ),
     );
     if (!mounted || action == null) return;
-    if (action == 'rename') {
-      await _renameGroup(name);
-    } else if (action == 'delete') {
-      await _deleteGroup(name);
+    switch (action) {
+      case 'new':
+        await _create(group: def.name);
+      case 'pin':
+        await _toggleGroupPinned(def);
+      case 'subgroup':
+        await _createGroup(parent: def.name);
+      case 'rename':
+        await _renameGroup(def);
+      case 'color':
+        await _pickColor(def);
+      case 'up':
+        await _moveGroup(def, -1);
+      case 'down':
+        await _moveGroup(def, 1);
+      case 'delete':
+        await _deleteGroup(def);
     }
   }
 
-  Future<void> _renameGroup(String name) async {
+  /// 组置顶 / 取消置顶（同级组里排最前，顶部标签顺序同步）。
+  Future<void> _toggleGroupPinned(NoteGroupDef def) async {
+    try {
+      await widget.store.writeGroups(
+        _groupIndex.withGroupPinned(def.name, !def.pinned),
+      );
+      await _reload();
+      if (!mounted) return;
+      _toast(def.pinned ? '已取消置顶「${def.name}」' : '已置顶「${def.name}」');
+    } on NotesIoException catch (e) {
+      _toast(e.message);
+    }
+  }
+
+  Future<void> _renameGroup(NoteGroupDef def) async {
     final next = await showDialog<String>(
       context: context,
-      builder: (_) => RenameDialog(initialTitle: name, title: '重命名组'),
+      builder: (_) => RenameDialog(initialTitle: def.name, title: '重命名组'),
     );
+    if (!mounted) return;
     final clean = (next ?? '').trim();
-    if (!mounted || clean.isEmpty || clean == name) return;
-    if (isYearDir(clean) || isInternalName(clean)) {
-      _toast('「$clean」不能用：组名不能是年份数字，也不能用点开头的名字');
+    if (clean.isEmpty || clean == def.name) return;
+    if (_groupIndex.groupNamed(clean) != null) {
+      _toast('已经有叫「$clean」的组了');
       return;
     }
     try {
-      final root = await notesRoot();
-      final from = Directory(p.join(root.path, name));
-      final to = Directory(p.join(root.path, clean));
-      if (await from.exists() && !await to.exists()) {
-        await from.rename(to.path);
-      }
-      // 清单里同名的一级组（以及它的子组）跟着改名。
-      final groups = await widget.store.readGroups();
-      final nextMap = <String, List<String>>{};
-      groups.byGroup.forEach((key, paths) {
-        if (topOf(key) == name) {
-          final renamed = clean + key.substring(name.length);
-          nextMap[renamed] = List<String>.of(paths);
-        } else {
-          nextMap[key] = List<String>.of(paths);
-        }
-      });
-      await widget.store.writeGroups(NoteGroups(nextMap));
+      await widget.store.writeGroups(_groupIndex.renameGroup(def.name, clean));
       await _reload();
       if (!mounted) return;
-      setState(() => _group = clean);
+      if (_filterGroup == def.name) setState(() => _filterGroup = clean);
       _toast('组已改名为「$clean」');
-    } on FileSystemException catch (e) {
-      _toast('改不了：${e.message}');
+    } on NotesIoException catch (e) {
+      _toast(e.message);
     }
   }
 
-  /// 删组只删「空文件夹 + 清单里的记录」，里面的笔记文件一个都不动。
-  Future<void> _deleteGroup(String name) async {
+  Future<void> _pickColor(NoteGroupDef def) async {
+    final picked = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('「${def.name}」的颜色'),
+        content: Wrap(
+          spacing: 12,
+          runSpacing: 12,
+          children: [
+            for (var i = 0; i < kNoteGroupColors.length; i++)
+              InkWell(
+                onTap: () => Navigator.pop(ctx, i),
+                borderRadius: BorderRadius.circular(22),
+                child: Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: noteGroupColor(i),
+                    shape: BoxShape.circle,
+                    border: i == def.color
+                        ? Border.all(
+                            color: Theme.of(ctx).colorScheme.onSurface,
+                            width: 3,
+                          )
+                        : null,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    try {
+      await widget.store.writeGroups(_groupIndex.withColor(def.name, picked));
+      await _reload();
+    } on NotesIoException catch (e) {
+      _toast(e.message);
+    }
+  }
+
+  Future<void> _moveGroup(NoteGroupDef def, int delta) async {
+    try {
+      await widget.store
+          .writeGroups(_groupIndex.moveGroup(def.name, delta));
+      await _reload();
+    } on NotesIoException catch (e) {
+      _toast(e.message);
+    }
+  }
+
+  /// 删组只删组名与归属记录，笔记文件一个都不动（回「未分组」）；
+  /// 子组上移到它的上一层（1.55）。
+  Future<void> _deleteGroup(NoteGroupDef def) async {
+    final count = _groupIndex.pathsOf(def.name).length;
+    final children = _groupIndex.childrenOf(def.name).length;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('删除组「$name」？'),
-        content: const Text('只会删掉这个空文件夹和在组清单里的记录，'
-            '组里的笔记文件都还在「全部」里，不会被删。'),
+        title: Text('删除组「${def.name}」？'),
+        content: Text('组里 $count 篇笔记会回到「未分组」，'
+            '${children > 0 ? '它的 $children 个子组会移到上一层，' : ''}'
+            '文件一个都不删，手动顺序也不再保留。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -764,99 +1109,48 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
     );
     if (ok != true || !mounted) return;
     try {
-      final root = await notesRoot();
-      final dir = Directory(p.join(root.path, name));
-      if (await dir.exists()) {
-        final empty = await dir.list().length == 0;
-        if (empty) await dir.delete();
-      }
-      final groups = await widget.store.readGroups();
-      final nextMap = <String, List<String>>{};
-      groups.byGroup.forEach((key, paths) {
-        if (topOf(key) != name) nextMap[key] = List<String>.of(paths);
-      });
-      await widget.store.writeGroups(NoteGroups(nextMap));
+      await widget.store.writeGroups(_groupIndex.deleteGroup(def.name));
       await _reload();
       if (!mounted) return;
-      setState(() {
-        _mode = NotesListMode.all;
-        _group = null;
-      });
-    } on FileSystemException catch (e) {
-      _toast('删不了：${e.message}');
+      if (_filterGroup == def.name) setState(() => _filterGroup = null);
+      _toast('已删除组「${def.name}」，$count 篇笔记回到未分组');
+    } on NotesIoException catch (e) {
+      _toast(e.message);
     }
   }
 
-  /// 「加入组…」：一篇笔记可以同时属于多个组（多对多，指向同一个文件）。
-  Future<void> _editGroups(NoteFile note) async {
-    final names = _groupIndex.topNames;
-    final picked = <String>{..._groupIndex.groupsOf(note.relPath).map(topOf)};
-    final result = await showDialog<Set<String>>(
+  /// 「移动到组…」：一篇笔记同时只在一个组里，单选。
+  Future<void> _moveNote(NoteFile note) async {
+    final current = _groupIndex.groupOf(note.relPath) ?? '';
+    final ordered = <NoteGroupDef>[];
+    void walk(NoteGroupDef def) {
+      ordered.add(def);
+      for (final child in _groupIndex.childrenOf(def.name)) {
+        walk(child);
+      }
+    }
+
+    for (final root in _groupIndex.roots) {
+      walk(root);
+    }
+    final picked = await showDialog<String>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setLocal) => AlertDialog(
-          title: Text('「${note.title}」属于哪些组？'),
-          content: SizedBox(
-            width: 320,
-            child: names.isEmpty
-                ? const Text('还没有组。先在视图条里点「新建组」，'
-                    '或者直接在笔记库里建一个文件夹。')
-                : ListView(
-                    shrinkWrap: true,
-                    children: [
-                      for (final name in names)
-                        CheckboxListTile(
-                          dense: true,
-                          value: picked.contains(name),
-                          title: Text(name),
-                          onChanged: (value) => setLocal(() {
-                            if (value == true) {
-                              picked.add(name);
-                            } else {
-                              picked.remove(name);
-                            }
-                          }),
-                        ),
-                    ],
-                  ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, picked),
-              child: const Text('保存'),
-            ),
-          ],
-        ),
+      builder: (ctx) => _MoveToGroupDialog(
+        title: '把「${note.title}」移到…',
+        current: current,
+        groups: ordered,
+        depths: <String, int>{
+          for (final def in ordered) def.name: _groupIndex.depthOf(def.name),
+        },
       ),
     );
-    if (result == null || !mounted) return;
+    if (picked == null || !mounted) return;
     try {
-      final groups = await widget.store.readGroups();
-      final nextMap = <String, List<String>>{};
-      groups.byGroup.forEach((key, paths) {
-        final isTop = topOf(key) == key;
-        if (!isTop) {
-          nextMap[key] = List<String>.of(paths);
-          return;
-        }
-        final list = List<String>.of(paths)..remove(note.relPath);
-        if (result.contains(key)) list.add(note.relPath);
-        if (list.isNotEmpty) nextMap[key] = list;
-      });
-      // 选中但当时还不存在的组名，补一条。
-      for (final name in result) {
-        final list = nextMap[name] ?? <String>[];
-        if (!list.contains(note.relPath)) list.add(note.relPath);
-        nextMap[name] = list;
-      }
-      await widget.store.writeGroups(NoteGroups(nextMap));
+      await widget.store
+          .writeGroups(_groupIndex.withNoteGroup(note.relPath, picked));
       await _reload();
       if (!mounted) return;
-      _toast(result.isEmpty ? '已移出所有组' : '已放进 ${result.length} 个组');
+      _toast(picked.isEmpty ? '已移到未分组' : '已移到「$picked」');
     } on NotesIoException catch (e) {
       _toast(e.message);
     }
@@ -864,7 +1158,8 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
 
   Widget _emptyView() {
     final theme = Theme.of(context);
-    final label = _mode == NotesListMode.group ? '组「${_group ?? ''}」' : '这个视图';
+    final label =
+        _filterGroup == null ? '这个视图' : '组「$_filterGroup」';
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -877,7 +1172,7 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
             Text('$label里还没有笔记', style: theme.textTheme.titleMedium),
             const SizedBox(height: 6),
             Text(
-              '「新建」会把笔记存到年/月目录，并加进当前组。',
+              '「新建」会把笔记存到年/月目录，并归到当前组。',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall,
             ),
@@ -890,17 +1185,27 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
   Widget _body() {
     if (_searching && !_selecting) return _searchResults();
     if (_notes.isEmpty) return _empty();
-    if (_visible().isEmpty) return _emptyView();
+    final sections = _sections();
+    if (sections.isEmpty ||
+        sections.every((group) => group.notes.isEmpty)) {
+      return _emptyView();
+    }
     return RefreshIndicator(
       onRefresh: _reload,
       child: NoteListBody(
-        groups: _groups(),
-        // 时间视图平铺、禁拖拽（顺序由时间决定，拖了也会被排序覆盖）。
-        showHeaders: !_isTimeMode,
-        draggable: !_isTimeMode,
+        groups: sections,
+        // 组标题永远画（含「未分组」）；折叠时只留标题。
+        showHeaders: true,
+        // 只有手动顺序可拖；时间排序是临时的，拖了也会被排回去。
+        draggable: _isManual,
         now: DateTime.now(),
         selecting: _selecting,
         selected: _selected,
+        pinnedNotes: _groupIndex.pins,
+        onToggleCollapse: _toggleCollapse,
+        onGroupMenu: (group, rect, at) =>
+            unawaited(_openGroupMenu(group, rect, at)),
+        onCreateInGroup: (group) => unawaited(_createInGroup(group)),
         onSelect: _toggleSelect,
         onOpen: (note) => unawaited(_open(note)),
         onMenu: (note, rect, at) => unawaited(_openMenu(note, rect, at)),
@@ -909,33 +1214,13 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
     );
   }
 
-  /// 按月分组：`createdAt` 的年月相同就归一组，组的顺序沿用 `list()` 的顺序。
-  List<NoteGroup> _groups() {
-    final visible = _visible();
-    if (_isTimeMode) {
-      // 时间视图：一整段平铺，不画月份小标题。
-      return [NoteGroup(key: '', title: '', notes: visible)];
-    }
-    final groups = <String, List<NoteFile>>{};
-    for (final note in visible) {
-      final key = monthKeyOf(note.createdAt);
-      (groups[key] ??= <NoteFile>[]).add(note);
-    }
-    return [
-      for (final entry in groups.entries)
-        NoteGroup(
-          key: entry.key,
-          title: formatMonthHeader(entry.value.first.createdAt),
-          notes: entry.value,
-        ),
-    ];
-  }
-
-  /// 拖拽落位：把这一组的新顺序写进 `.order.json`，然后重新扫库。
+  /// 拖拽落位：写进这个组的手动顺序，然后重新扫库。
   Future<void> _reorder(String groupKey, List<String> orderedIds) async {
-    if (_busy) return;
+    if (!_isManual || _busy) return;
     try {
-      await widget.store.writeOrder(groupKey, orderedIds);
+      await widget.store.writeGroups(
+        _groupIndex.withOrder(groupKey, orderedIds),
+      );
       await _reload();
     } on NotesIoException catch (e) {
       _toast(e.message);
@@ -998,6 +1283,86 @@ class NotesViewState extends State<NotesView> with MinuteRefresh<NotesView> {
           ],
         ),
       ),
+    );
+  }
+}
+
+
+/// 「移动到组…」的单选对话框：`''` 表示未分组，null = 取消。
+class _MoveToGroupDialog extends StatefulWidget {
+  const _MoveToGroupDialog({
+    required this.title,
+    required this.current,
+    required this.groups,
+    this.depths = const <String, int>{},
+  });
+
+  final String title;
+  final String current;
+  final List<NoteGroupDef> groups;
+  final Map<String, int> depths;
+
+  @override
+  State<_MoveToGroupDialog> createState() => _MoveToGroupDialogState();
+}
+
+class _MoveToGroupDialogState extends State<_MoveToGroupDialog> {
+  late String _picked = widget.current;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    Widget row(String value, String label, {int? color}) {
+      final selected = _picked == value;
+      return ListTile(
+        dense: true,
+        leading: Icon(
+          selected ? Icons.check_circle : Icons.circle_outlined,
+          size: 20,
+          color: selected ? scheme.primary : scheme.outline,
+        ),
+        title: Row(
+          children: [
+            if (color != null) ...[
+              Icon(Icons.folder_outlined,
+                  size: 16, color: noteGroupColor(color)),
+              const SizedBox(width: 6),
+            ],
+            Expanded(child: Text(label)),
+          ],
+        ),
+        onTap: () => setState(() => _picked = value),
+      );
+    }
+
+    return AlertDialog(
+      title: Text(widget.title),
+      content: SizedBox(
+        width: 320,
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            row('', '未分组'),
+            for (final def in widget.groups)
+              Padding(
+                padding: EdgeInsets.only(
+                  left: 12.0 * (widget.depths[def.name] ?? 0),
+                ),
+                child: row(def.name, def.name, color: def.color),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _picked),
+          child: const Text('保存'),
+        ),
+      ],
     );
   }
 }

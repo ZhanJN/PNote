@@ -20,22 +20,62 @@ import 'package:pnote/notes/notes_model.dart';
 import 'package:pnote/ui/notes/note_tile.dart';
 import 'package:pnote/ui/common/press_machine.dart';
 
-/// 列表里的一个月分组（`2026 年 11 月`）。
+/// 列表里的一个组分区（1.54：不再是「2026 年 11 月」）。
+///
+/// `collapsed` 为真时这一组的笔记不渲染，只留一条组标题行；折叠状态由页面
+/// 存进 `.groups.json` 并随同步走，所以在别的设备上也是收起的。
 class NoteGroup {
   const NoteGroup({
     required this.key,
     required this.title,
     required this.notes,
+    this.color = 0,
+    this.collapsed = false,
+    this.collapsible = true,
+    this.ungrouped = false,
+    this.depth = 0,
+    this.pinned = false,
   });
 
-  /// `2026-11`，写进 `.order.json` 的键。
+  /// 组名；`''` 表示「未分组」。
   final String key;
 
-  /// 小标题文案。
+  /// 组标题文案。
   final String title;
 
   final List<NoteFile> notes;
+
+  /// 0..7，和待办组的 8 色一致。
+  final int color;
+
+  final bool collapsed;
+
+  /// 未分组分区没有「组」可折叠，但允许收起自己的笔记。
+  final bool collapsible;
+
+  final bool ungrouped;
+
+  /// 0 = 一级组；子组依次 +1（1.55）。
+  final int depth;
+
+  /// 组被置顶时，组标题后面挂一枚图钉（1.55）。
+  final bool pinned;
 }
+
+/// 笔记组的 8 色（和待办页 `kGroupPalette` 同一套色值）。
+const List<Color> kNoteGroupColors = <Color>[
+  Color(0xFF5B8DEF),
+  Color(0xFF4CAF50),
+  Color(0xFFFFA726),
+  Color(0xFFEF5350),
+  Color(0xFFAB47BC),
+  Color(0xFF26A69A),
+  Color(0xFF8D6E63),
+  Color(0xFF78909C),
+];
+
+Color noteGroupColor(int index) =>
+    kNoteGroupColors[index.clamp(0, kNoteGroupColors.length - 1)];
 
 class NoteListBody extends StatefulWidget {
   const NoteListBody({
@@ -45,14 +85,27 @@ class NoteListBody extends StatefulWidget {
     required this.onOpen,
     required this.onMenu,
     required this.onReorder,
+    this.onToggleCollapse,
+    this.onGroupMenu,
+    this.onCreateInGroup,
     this.selecting = false,
     this.selected = const <String>{},
     this.onSelect,
     this.showHeaders = true,
     this.draggable = true,
+    this.pinnedNotes = const <String>{},
   });
 
   final List<NoteGroup> groups;
+
+  /// 点组标题的箭头：收起 / 展开这一组。
+  final ValueChanged<String>? onToggleCollapse;
+
+  /// 1.56：直接在列表里的组标题上开菜单（长按 / 右键），与组标签菜单一致。
+  final void Function(NoteGroup group, Rect rect, Offset? at)? onGroupMenu;
+
+  /// 1.56：组标题右侧「+」：在这个组里新建一篇笔记。
+  final ValueChanged<NoteGroup>? onCreateInGroup;
 
   /// 相对时间的基准。
   final DateTime now;
@@ -74,6 +127,9 @@ class NoteListBody extends StatefulWidget {
 
   /// 时间视图按时间排，拖出来的顺序会被排序覆盖，所以那里禁拖拽（菜单照常）。
   final bool draggable;
+
+  /// 置顶的笔记（1.55）：标题前挂图钉。
+  final Set<String> pinnedNotes;
 
   @override
   State<NoteListBody> createState() => _NoteListBodyState();
@@ -457,14 +513,14 @@ class _NoteListBodyState extends State<NoteListBody>
         rows.add(_Row.ghost(note));
       }
     }
-
     emit(null);
     final dragging = _machine.phase == PressPhase.dragging;
     final activeGroup = _activeId == null ? null : _groupOf(_activeId!);
     for (final group in widget.groups) {
-      if (widget.showHeaders && group.title.isNotEmpty) {
-        rows.add(_Row.header(group.title));
+      if (widget.showHeaders) {
+        rows.add(_Row.header(group));
       }
+      if (group.collapsed) continue;
       for (var i = 0; i < group.notes.length; i++) {
         final note = group.notes[i];
         if (dragging &&
@@ -477,6 +533,7 @@ class _NoteListBodyState extends State<NoteListBody>
         rows.add(_Row.fresh(
           note,
           entering: _entering.contains(note.relPath),
+          depth: group.depth,
         ));
         emit(note.relPath);
       }
@@ -515,7 +572,7 @@ class _NoteListBodyState extends State<NoteListBody>
         itemBuilder: (_, index) {
           final row = rows[index];
           if (row.bar) return _insertBar(theme, reduce);
-          if (row.title != null) return _header(theme, row.title!);
+          if (row.header != null) return _header(theme, row.header!);
           return _buildNote(
             theme: theme,
             row: row,
@@ -528,15 +585,87 @@ class _NoteListBodyState extends State<NoteListBody>
     );
   }
 
-  Widget _header(ThemeData theme, String title) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 14, 20, 4),
-      child: Text(
-        title,
-        style: theme.textTheme.labelMedium?.copyWith(
-          color: theme.colorScheme.primary,
-          fontWeight: FontWeight.w700,
-        ),
+  /// 组标题行：箭头 + 文件夹 + 组名 + 篇数。整行可点，箭头旋转。
+  Widget _header(ThemeData theme, NoteGroup group) {
+    final scheme = theme.colorScheme;
+    final color = noteGroupColor(group.color);
+    final arrow = group.collapsed ? Icons.chevron_right : Icons.expand_more;
+    return Material(
+      color: Colors.transparent,
+      child: Builder(
+        builder: (ctx) {
+          Rect rectOf() {
+            final box = ctx.findRenderObject() as RenderBox?;
+            if (box == null || !box.hasSize) return Rect.zero;
+            return box.localToGlobal(Offset.zero) & box.size;
+          }
+
+          void openMenu(Offset? at) =>
+              widget.onGroupMenu?.call(group, rectOf(), at);
+
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onLongPress: () => openMenu(null),
+            onSecondaryTapDown: (details) => openMenu(details.globalPosition),
+            child: InkWell(
+              onTap: () => widget.onToggleCollapse?.call(group.key),
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(14 + group.depth * 18.0, 12, 8, 6),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 22,
+                      child: Icon(arrow,
+                          size: 20, color: scheme.onSurfaceVariant),
+                    ),
+                    Icon(
+                      group.ungrouped
+                          ? Icons.inbox_outlined
+                          : Icons.folder_outlined,
+                      size: 20,
+                      color: group.ungrouped ? scheme.outline : color,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        group.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color:
+                              group.ungrouped ? scheme.onSurfaceVariant : color,
+                        ),
+                      ),
+                    ),
+                    if (group.pinned) ...[
+                      const SizedBox(width: 4),
+                      Icon(Icons.push_pin, size: 14, color: scheme.primary),
+                    ],
+                    const SizedBox(width: 8),
+                    Text(
+                      '${group.notes.length}',
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                    if (widget.onCreateInGroup != null)
+                      IconButton(
+                        tooltip: group.ungrouped ? '新建笔记' : '在「${group.title}」里新建笔记',
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 32,
+                          minHeight: 32,
+                        ),
+                        icon: const Icon(Icons.add, size: 18),
+                        onPressed: () => widget.onCreateInGroup!(group),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -561,6 +690,7 @@ class _NoteListBodyState extends State<NoteListBody>
       elevated: elevated,
       settling: _settleId == note.relPath,
       fading: false,
+      pinned: widget.pinnedNotes.contains(note.relPath),
       // 和待办页一致：授予资格之后把 onTap 摘掉，抬起时不会再「顺手打开」；
       // 下一次按下的 _onDown 会把它恢复（见 _onDown 里的 _suppressTap = false）。
       interactive: !_suppressTap && !row.ghost,
@@ -612,13 +742,19 @@ class _NoteListBodyState extends State<NoteListBody>
     } else if (row.entering) {
       scale = progress;
     }
-    if (scale >= 0.999) return keyed;
+    final padded = row.depth == 0
+        ? keyed
+        : Padding(
+            padding: EdgeInsets.only(left: row.depth * 18.0),
+            child: keyed,
+          );
+    if (scale >= 0.999) return padded;
     // 只裁高度、不套 Opacity：逐行 saveLayer 在 Impeller 上首帧会闪。
     return ClipRect(
       child: Align(
         alignment: Alignment.topCenter,
         heightFactor: scale.clamp(0.0, 1.0),
-        child: keyed,
+        child: padded,
       ),
     );
   }
@@ -641,35 +777,40 @@ class _NoteListBodyState extends State<NoteListBody>
   }
 }
 
-/// 渲染列表里的一行：分组小标题、正常笔记、正在收缩的幽灵、插入线。
+/// 渲染列表里的一行：组标题、正常笔记、正在收缩的幽灵、插入线。
 class _Row {
-  _Row.header(this.title)
-      : note = null,
+  _Row.header(NoteGroup group)
+      : header = group,
+        note = null,
         ghost = false,
         entering = false,
-        bar = false;
+        bar = false,
+        depth = group.depth;
 
-  _Row.fresh(this.note, {required this.entering})
-      : title = null,
+  _Row.fresh(this.note, {required this.entering, this.depth = 0})
+      : header = null,
         ghost = false,
         bar = false;
 
   _Row.ghost(this.note)
-      : title = null,
+      : header = null,
         ghost = true,
         entering = false,
-        bar = false;
+        bar = false,
+        depth = 0;
 
   _Row.bar()
-      : title = null,
+      : header = null,
         note = null,
         ghost = false,
         entering = false,
-        bar = true;
+        bar = true,
+        depth = 0;
 
-  final String? title;
+  final NoteGroup? header;
   final NoteFile? note;
   final bool ghost;
   final bool entering;
   final bool bar;
+  final int depth;
 }

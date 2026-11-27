@@ -27,7 +27,8 @@ class _MemStore extends NotesStore {
       );
 
   @override
-  Future<List<NoteFile>> list() async => texts.keys.map(_file).toList();
+  Future<List<NoteFile>> list({bool withPreview = false}) async =>
+      texts.keys.map(_file).toList();
 
   @override
   Future<String> read(String relPath) async => texts[relPath]!;
@@ -83,7 +84,13 @@ void main() {
 
     expect(find.text('8 字'), findsOneWidget);
 
-    await tester.enterText(find.byType(TextField), '# 白板复盘\n\n三件事都做完了');
+    // 1.55 起有内容的笔记默认进预览，先切回编辑再输入。
+    await tester.tap(find.byTooltip('回到编辑'));
+    await tester.pump();
+    await tester.enterText(
+      find.byType(TextField).at(2),
+      '三件事都做完了',
+    );
     await tester.pump();
     expect(find.text('12 字'), findsOneWidget);
   });
@@ -113,19 +120,25 @@ void main() {
     await tester.pump();
     await tester.pump();
 
+    await tester.tap(find.byTooltip('回到编辑'));
+    await tester.pump();
     await tester.tap(find.byTooltip('大纲（跳到标题）'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.text('大纲（3 个标题）'), findsOneWidget);
-    expect(find.text('本周问题'), findsOneWidget);
+    expect(find.text('本周问题'), findsWidgets);
 
-    await tester.tap(find.text('下一步'));
+    await tester.tap(find.widgetWithText(ListTile, '下一步'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
 
-    final field = tester.widget<TextField>(find.byType(TextField));
-    expect(field.controller!.selection.baseOffset, text.indexOf('## 下一步'));
+    // 1.57 起是块编辑器：定位到「下一步」那一块，光标在块尾。
+    final heading = tester
+        .widgetList<TextField>(find.byType(TextField))
+        .firstWhere((field) => field.controller!.text == '下一步');
+    expect(heading.controller!.selection.baseOffset, '下一步'.length);
   });
 
   testWidgets('带锚点进来直接定位到对应标题（1.44）', (tester) async {
@@ -149,8 +162,15 @@ void main() {
     await tester.pump();
     await tester.pump();
 
-    final field = tester.widget<TextField>(find.byType(TextField));
-    expect(field.controller!.selection.baseOffset, text.indexOf('## 下一步'));
+    await tester.tap(find.byTooltip('回到编辑'));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    // 1.57 起是块编辑器：定位到「下一步」那一块，光标在块尾。
+    final heading = tester
+        .widgetList<TextField>(find.byType(TextField))
+        .firstWhere((field) => field.controller!.text == '下一步');
+    expect(heading.controller!.selection.baseOffset, '下一步'.length);
   });
 
   testWidgets('锚点找不到时给出提示（1.44）', (tester) async {
@@ -176,5 +196,58 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
 
     expect(find.textContaining('没有「不存在的小节」这个标题'), findsOneWidget);
+  });
+
+  testWidgets('有内容的笔记默认进预览，空白笔记默认进编辑（1.55）', (tester) async {
+    final store = _MemStore({
+      _selfPath: '# 白板复盘\n\n三件事',
+      _planPath: '',
+    });
+    await tester.pumpWidget(_editor(store));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.byType(TextField), findsNothing);
+    expect(find.byTooltip('回到编辑'), findsOneWidget);
+
+    // 空白笔记：默认就是编辑。
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    await tester.pumpWidget(MaterialApp(
+      home: NoteEditorPage(
+        key: UniqueKey(),
+        note: NoteFile(
+          relPath: _planPath,
+          title: '今天的计划',
+          createdAt: DateTime(2026, 11, 23, 21, 5),
+          modified: DateTime(2026, 11, 23, 21, 5),
+          size: 0,
+        ),
+        store: store,
+        hasNote: (_) => true,
+        openNote: (_) {},
+      ),
+    ));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.byType(TextField), findsWidgets);
+    expect(find.byTooltip('预览'), findsOneWidget);
+  });
+
+  testWidgets('预览与编辑可往返切换（1.55）', (tester) async {
+    final store = _MemStore({_selfPath: '# 白板复盘\n\n三件事'});
+    await tester.pumpWidget(_editor(store));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byType(TextField), findsNothing);
+
+    await tester.tap(find.byTooltip('回到编辑'));
+    await tester.pump();
+    expect(find.byType(TextField), findsWidgets);
+
+    await tester.tap(find.byTooltip('预览'));
+    await tester.pump();
+    expect(find.byType(TextField), findsNothing);
   });
 }

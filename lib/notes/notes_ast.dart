@@ -6,6 +6,8 @@ library;
 
 import 'package:markdown/markdown.dart' as md;
 
+import 'markdown_blocks.dart';
+
 /// `[[名字]]` 与 `![[名字]]` 的统一匹配：group(1) 是 `!` 或空。
 final RegExp kRefPattern = RegExp(r'(!?)\[\[([^\[\]\n]+)\]\]');
 
@@ -101,9 +103,20 @@ class NoteDoc {
 }
 
 /// 解析源码。不会抛异常——坏掉的语法最多显示成原文。
-NoteDoc parseNoteSource(String source) {
+///
+/// [keepBlankLines] 为 true 时（预览用）保留作者连续敲出的空行；编辑器大纲
+/// 必须用 false，否则偏移量与输入框里的原文对不上。
+NoteDoc parseNoteSource(String source, {bool keepBlankLines = false}) {
+  // 预览专用：补全「###标题」缺的空格、保护行首 4 空格缩进；编辑路径保持原文，
+  // 否则大纲偏移量与输入框里的文字对不上。
+  var text = source;
+  if (keepBlankLines) {
+    text = protectIndentedLines(normalizeHeadings(text));
+    text = applyAlignmentMarkers(text);
+    text = expandBlankLines(text);
+  }
   final document = md.Document(extensionSet: md.ExtensionSet.gitHubFlavored);
-  final nodes = document.parse(source);
+  final nodes = document.parse(text);
 
   final headings = <String>[];
   for (final node in nodes) {
@@ -115,7 +128,7 @@ NoteDoc parseNoteSource(String source) {
   // 偏移量得自己扫（AST 不给位置）。行内强调会让 AST 文本与原文不同（`**粗**`
   // vs `粗`），所以文本取 AST 的，位置按顺序取扫描结果；两者数量不一致
   // （setext 标题、围栏里的假标题）就退回扫描结果，宁丑勿错。
-  final scanned = scanHeadings(source);
+  final scanned = scanHeadings(text);
   final headingItems = <NoteHeading>[];
   if (scanned.length == headings.length) {
     for (var i = 0; i < headings.length; i++) {
@@ -131,7 +144,7 @@ NoteDoc parseNoteSource(String source) {
 
   final assets = <String>{};
   final links = <String>{};
-  for (final match in kRefPattern.allMatches(source)) {
+  for (final match in kRefPattern.allMatches(text)) {
     final name = match.group(2)!.trim();
     if (name.isEmpty) continue;
     if (match.group(1) == '!') {

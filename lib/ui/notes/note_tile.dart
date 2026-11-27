@@ -28,6 +28,7 @@ class NoteTile extends StatelessWidget {
     this.settling = false,
     this.fading = false,
     this.interactive = true,
+    this.pinned = false,
   });
 
   final NoteFile note;
@@ -56,6 +57,9 @@ class NoteTile extends StatelessWidget {
   /// false 时这一手势不再响应点击（长按抬手不能顺手把笔记打开）。
   final bool interactive;
 
+  /// 置顶的笔记在组内排最前，并在标题前挂一个小图钉。
+  final bool pinned;
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -70,9 +74,37 @@ class NoteTile extends StatelessWidget {
               onChanged: interactive ? (_) => onSelect?.call() : null,
             )
           : const Icon(Icons.article_outlined),
-      title: Text(note.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(
-        '${formatRelative(note.modified, now)} · ${formatSize(note.size)}',
+      title: pinned
+          ? Row(
+              children: [
+                Icon(Icons.push_pin, size: 14, color: scheme.primary),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    note.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            )
+          : Text(note.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${formatRelative(note.modified, now)} · ${formatSize(note.size)}',
+          ),
+          if (note.preview.isNotEmpty)
+            Text(
+              note.preview,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+        ],
       ),
       onTap: !interactive
           ? null

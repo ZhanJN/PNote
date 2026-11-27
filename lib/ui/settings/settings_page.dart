@@ -17,6 +17,7 @@ import 'package:pnote/theme/theme_controller.dart';
 import 'package:pnote/ui/devices/devices_page.dart';
 import 'package:pnote/ui/reminders/reminder_section.dart';
 import 'package:pnote/ui/settings/account_dialog.dart';
+import 'package:pnote/ui/settings/notes_prefs.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, this.sync});
@@ -138,7 +139,13 @@ class SettingsPage extends StatelessWidget {
           Card(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             clipBehavior: Clip.antiAlias,
-            child: const _NotesLibraryTile(),
+            child: Column(
+              children: [
+                const _NotesLibraryTile(),
+                const Divider(height: 1),
+                _NoteListPreviewTile(dao: controller.dao),
+              ],
+            ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
@@ -216,6 +223,54 @@ class _AutoDeleteDoneTileState extends State<_AutoDeleteDoneTile> {
       secondary: const Icon(Icons.cleaning_services_outlined),
       title: const Text('完成后自动移入回收站'),
       subtitle: const Text('勾掉就收起，可在回收站恢复'),
+      value: _value ?? false,
+      onChanged: _value == null ? null : _set,
+    );
+  }
+}
+
+/// 「列表显示笔记首行」（1.59）。
+///
+/// 开启后笔记列表在时间/大小那一行下面再显示标题后的第一段文字。
+/// 键 note_list_preview，本机偏好、不参与同步。
+class _NoteListPreviewTile extends StatefulWidget {
+  const _NoteListPreviewTile({required this.dao});
+
+  final TaskDao dao;
+
+  @override
+  State<_NoteListPreviewTile> createState() => _NoteListPreviewTileState();
+}
+
+class _NoteListPreviewTileState extends State<_NoteListPreviewTile> {
+  bool? _value;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final raw = await widget.dao.readSetting(kNoteListPreviewKey);
+    if (!mounted) return;
+    final value = raw == '1';
+    noteListPreview.value = value;
+    setState(() => _value = value);
+  }
+
+  Future<void> _set(bool value) async {
+    setState(() => _value = value);
+    noteListPreview.value = value;
+    await widget.dao.writeSetting(kNoteListPreviewKey, value ? '1' : '0');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      secondary: const Icon(Icons.article_outlined),
+      title: const Text('列表显示笔记首行'),
+      subtitle: const Text('在标题下多显示一行正文摘要'),
       value: _value ?? false,
       onChanged: _value == null ? null : _set,
     );

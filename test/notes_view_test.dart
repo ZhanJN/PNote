@@ -26,11 +26,14 @@ class _FakeStore extends NotesStore {
   @override
   Future<NoteGroups> readGroups() async => groups;
 
+  @override
+  Future<NoteGroups> readGroupsMigrated() async => groups;
+
   /// 记下有没有被调用，方便确认「切页会重扫」。
   int listCalls = 0;
 
   @override
-  Future<List<NoteFile>> list() async {
+  Future<List<NoteFile>> list({bool withPreview = false}) async {
     listCalls++;
     return notes;
   }
@@ -97,7 +100,7 @@ void main() {
 
     expect(find.text('白板复盘'), findsOneWidget);
     expect(find.text('购物清单'), findsOneWidget);
-    expect(find.text('2026 年 11 月'), findsOneWidget);
+    expect(find.text('未分组'), findsOneWidget);
     expect(reported, 2);
     expect(store.listCalls, 1);
   });
@@ -208,7 +211,8 @@ void main() {
     await tester.tap(find.text('删除'));
     await tester.pumpAndSettle();
     expect(find.text('删除选中的 1 篇笔记？'), findsOneWidget);
-    expect(find.textContaining('.trash'), findsOneWidget);
+    // 1.56：用户要求面向人话，不再暴露 .trash 目录名。
+    expect(find.textContaining('回收站'), findsWidgets);
 
     // 顶栏也有一「取消」（退出多选），这里只点对话框里的那个。
     await tester.tap(find.descendant(
@@ -222,50 +226,58 @@ void main() {
 
   // --------------------------------------------- 1.48：视图条与时间视图
 
-  testWidgets('视图条有「全部」「新建组」和四种时间视图（1.48）', (tester) async {
+  testWidgets('视图条有「全部」「新建组」和排序入口（1.54）', (tester) async {
     await tester.pumpWidget(_wrap(_FakeStore([_note('白板复盘')])));
     await tester.pump();
 
     expect(find.text('全部'), findsOneWidget);
     expect(find.text('新建组'), findsOneWidget);
-    expect(find.text('创建 ↑'), findsOneWidget);
-    expect(find.text('创建 ↓'), findsOneWidget);
-    expect(find.text('修改 ↑'), findsOneWidget);
-    expect(find.text('修改 ↓'), findsOneWidget);
+    expect(find.text('排序：手动'), findsOneWidget);
+
+    await tester.tap(find.text('排序：手动'));
+    await tester.pumpAndSettle();
+    expect(find.text('创建时间 ↑'), findsOneWidget);
+    expect(find.text('创建时间 ↓'), findsOneWidget);
+    expect(find.text('修改时间 ↑'), findsOneWidget);
+    expect(find.text('修改时间 ↓'), findsOneWidget);
   });
 
-  testWidgets('时间视图平铺：不画月份标题，按创建时间正序（1.48）', (tester) async {
+  testWidgets('时间排序是临时视图：不画月份标题，旧的在上（1.54）', (tester) async {
     final older = _note('旧笔记', created: DateTime(2026, 10, 2, 9));
     final newer = _note('新笔记', created: DateTime(2026, 11, 20, 9));
     await tester.pumpWidget(_wrap(_FakeStore([newer, older])));
     await tester.pump();
 
-    expect(find.text('2026 年 11 月'), findsOneWidget);
+    // 手动视图只有组标题，不再有「2026 年 11 月」这种时间分隔。
+    expect(find.text('未分组'), findsOneWidget);
+    expect(find.text('2026 年 11 月'), findsNothing);
 
-    await tester.tap(find.text('创建 ↑'));
+    await tester.tap(find.text('排序：手动'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('创建时间 ↑'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 
-    // 平铺：两个月份标题都不该出现。
     expect(find.text('2026 年 11 月'), findsNothing);
     expect(find.text('2026 年 10 月'), findsNothing);
     expect(tester.getTopLeft(find.text('旧笔记')).dy,
         lessThan(tester.getTopLeft(find.text('新笔记')).dy));
   });
 
-  testWidgets('组视图只显示这个组里的笔记（1.48）', (tester) async {
+  testWidgets('组视图只显示这个组里的笔记（1.54）', (tester) async {
     final inside = _note('组里的');
     final outside = _note('组外的');
     final store = _FakeStore(
       [inside, outside],
-      groups: NoteGroups({
-        '工作': [inside.relPath],
-      }),
+      groups: NoteGroups(
+        groups: const [NoteGroupDef(name: '工作')],
+        assign: {inside.relPath: '工作'},
+      ),
     );
     await tester.pumpWidget(_wrap(store));
     await tester.pump();
 
-    await tester.tap(find.text('工作'));
+    await tester.tap(find.text('工作').first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 

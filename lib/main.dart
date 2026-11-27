@@ -10,6 +10,7 @@ import 'package:pnote/platform/keep_alive.dart';
 import 'package:pnote/sync/account.dart';
 import 'package:pnote/sync/sync_service.dart';
 import 'package:pnote/theme/theme.dart';
+import 'package:pnote/ui/settings/notes_prefs.dart';
 
 /// 启动顺序：初始化 Flutter 绑定 → 打开数据库 → 读取/生成设备 ID 与时钟 →
 /// 读主题偏好（1.18）→ 建同步服务（只开门，不自动同步）→ 请求「后台保活」→
@@ -24,6 +25,9 @@ Future<void> main() async {
     final reduceMotion = parseReduceMotion(
       await dao.readSetting(kReduceMotionKey),
     );
+    // 1.59：笔记列表是否显示首行预览（本机偏好，设置页里改）。
+    noteListPreview.value =
+        (await dao.readSetting(kNoteListPreviewKey)) == '1';
     // 1.47：笔记也进同步。版本用同一个 HLC 时钟，读写在笔记库目录里，
     // 和任务库互不依赖（笔记同步失败不该影响任务同步，反之亦然）。
     final notesSync = NotesSync(

@@ -11,6 +11,7 @@ import 'package:pnote/data/tree.dart';
 import 'package:pnote/platform/reminder_service.dart';
 import 'package:pnote/ui/tasks/group_dialogs.dart';
 import 'package:pnote/ui/tasks/group_tile.dart';
+import 'package:pnote/ui/common/horizontal_chip_bar.dart';
 import 'package:pnote/ui/common/minute_refresh.dart';
 import 'package:pnote/ui/reminders/reminder_dialog.dart';
 import 'package:pnote/ui/common/rename_dialog.dart';
@@ -751,56 +752,53 @@ class TasksViewState extends State<TasksView> with MinuteRefresh<TasksView> {
         if (!_selecting)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-            child: SizedBox(
+            child: HorizontalChipBar(
               height: 36,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                children: [
-                  for (final slice in TimeSlice.values)
+              children: [
+                for (final slice in TimeSlice.values)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      label: Text(
+                        slice == TimeSlice.overdue && overdueCount > 0
+                            ? '逾期 $overdueCount'
+                            : slice.label,
+                      ),
+                      selected: _groupViewId == null && _slice == slice,
+                      onSelected: (_) => setState(() {
+                        _slice = slice;
+                        _groupViewId = null;
+                      }),
+                    ),
+                  ),
+                if (_topGroups.isNotEmpty) ...[
+                  Container(
+                    width: 1,
+                    height: 22,
+                    margin: const EdgeInsets.only(right: 12, top: 7),
+                    color: scheme.outlineVariant,
+                  ),
+                  for (final group in _topGroups)
                     Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: ChoiceChip(
-                        label: Text(
-                          slice == TimeSlice.overdue && overdueCount > 0
-                              ? '逾期 $overdueCount'
-                              : slice.label,
+                        avatar: Icon(
+                          Icons.folder_outlined,
+                          size: 16,
+                          color: groupColor(group.color),
                         ),
-                        selected: _groupViewId == null && _slice == slice,
+                        label: Text(group.title),
+                        selected: _groupViewId == group.id,
                         onSelected: (_) => setState(() {
-                          _slice = slice;
-                          _groupViewId = null;
+                          _groupViewId = group.id;
+                          _slice = TimeSlice.all;
+                          _selecting = false;
+                          _selected.clear();
                         }),
                       ),
                     ),
-                  if (_topGroups.isNotEmpty) ...[
-                    Container(
-                      width: 1,
-                      height: 22,
-                      margin: const EdgeInsets.only(right: 12, top: 7),
-                      color: scheme.outlineVariant,
-                    ),
-                    for (final group in _topGroups)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ChoiceChip(
-                          avatar: Icon(
-                            Icons.folder_outlined,
-                            size: 16,
-                            color: groupColor(group.color),
-                          ),
-                          label: Text(group.title),
-                          selected: _groupViewId == group.id,
-                          onSelected: (_) => setState(() {
-                            _groupViewId = group.id;
-                            _slice = TimeSlice.all;
-                            _selecting = false;
-                            _selected.clear();
-                          }),
-                        ),
-                      ),
-                  ],
                 ],
-              ),
+              ],
             ),
           ),
         Expanded(

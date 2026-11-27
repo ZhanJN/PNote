@@ -21,6 +21,17 @@ Widget _wrap(NoteDoc doc, {bool Function(String)? hasNote}) {
   );
 }
 
+TextSpan? _findSpan(InlineSpan span, String text) {
+  if (span is TextSpan) {
+    if (span.text == text) return span;
+    for (final child in span.children ?? const <InlineSpan>[]) {
+      final found = _findSpan(child, text);
+      if (found != null) return found;
+    }
+  }
+  return null;
+}
+
 void main() {
   testWidgets('标题、加粗、列表、代码块、表格都能渲染', (tester) async {
     final doc = parseNoteSource(
@@ -43,6 +54,24 @@ void main() {
 
     expect(find.textContaining('缺图'), findsOneWidget);
     expect(find.textContaining('不存在的笔记'), findsOneWidget);
+  });
+
+  testWidgets('1.61 预览里的 ==高亮== 有底色且不显示标记', (tester) async {
+    await tester.pumpWidget(_wrap(parseNoteSource('这是 ==重点== 文字')));
+    final rich = tester.widget<RichText>(find.byType(RichText).first);
+    final span = _findSpan(rich.text, '重点');
+    expect(span, isNotNull);
+    expect(span!.style?.backgroundColor, isNotNull);
+    expect(find.textContaining('=='), findsNothing);
+  });
+
+  testWidgets('1.61 ::: center 在预览里居中且不显示标记', (tester) async {
+    final doc = parseNoteSource('::: center\n中间一段\n:::', keepBlankLines: true);
+    await tester.pumpWidget(_wrap(doc));
+    final rich = tester.widget<RichText>(find.byType(RichText).first);
+    expect(rich.textAlign, TextAlign.center);
+    expect(find.textContaining(':::'), findsNothing);
+    expect(find.textContaining('中间一段'), findsOneWidget);
   });
 
   testWidgets('空笔记给出空态文案', (tester) async {

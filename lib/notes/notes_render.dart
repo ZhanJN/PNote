@@ -145,9 +145,24 @@ class _NoteRenderState extends State<NoteRender> {
   Widget _paragraph(md.Element node, TextStyle base) {
     final lone = _loneImage(node);
     if (lone != null) return lone;
-    final children = node.children ?? const <md.Node>[];
+    var children = node.children ?? const <md.Node>[];
+    var align = TextAlign.left;
+    if (children.isNotEmpty && children.first is md.Text) {
+      final raw = (children.first as md.Text).text;
+      final mark = raw.isEmpty ? '' : raw[0];
+      final dir = switch (mark) {
+        '\u2063' => TextAlign.left,
+        '\u2064' => TextAlign.center,
+        '\u2065' => TextAlign.right,
+        _ => null,
+      };
+      if (dir != null) {
+        align = dir;
+        children = [md.Text(raw.substring(1)), ...children.skip(1)];
+      }
+    }
     final spans = _inline.build(children, base);
-    return Text.rich(TextSpan(children: spans), style: base);
+    return Text.rich(TextSpan(children: spans), style: base, textAlign: align);
   }
 
   /// 整段只有一个图片引用时按大图显示，而不是塞进文字行里。
@@ -228,20 +243,31 @@ class _NoteRenderState extends State<NoteRender> {
     String code = node.textContent;
     if (code.endsWith('\n')) code = code.substring(0, code.length - 1);
     final scheme = Theme.of(context).colorScheme;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: SelectableText(
-          code,
-          style: base.copyWith(fontFamily: 'monospace', fontSize: 13, height: 1.5),
-        ),
-      ),
+    final style = base.copyWith(
+      fontFamily: 'monospace',
+      fontSize: 13,
+      height: 1.5,
+    );
+    // 1.56：窄屏（手机）优先换行，不让人左右拖着看代码；宽屏才横向滚动。
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final narrow = constraints.maxWidth < 560;
+        final text = SelectableText(code, style: style);
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: narrow
+              ? text
+              : SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: text,
+                ),
+        );
+      },
     );
   }
 
@@ -330,16 +356,29 @@ class _NoteRenderState extends State<NoteRender> {
     }
     if (rows.isEmpty) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Table(
-        defaultColumnWidth: const IntrinsicColumnWidth(),
-        border: TableBorder.all(
-          color: scheme.outlineVariant,
-          borderRadius: BorderRadius.circular(6),
-        ),
-        children: rows,
-      ),
+    final border = TableBorder.all(
+      color: scheme.outlineVariant,
+      borderRadius: BorderRadius.circular(6),
+    );
+    // 1.56：手机上表格按屏宽等分、单元格内换行；电脑上仍按内容宽度横向滚动。
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 560) {
+          return Table(
+            defaultColumnWidth: const FlexColumnWidth(),
+            border: border,
+            children: rows,
+          );
+        }
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Table(
+            defaultColumnWidth: const IntrinsicColumnWidth(),
+            border: border,
+            children: rows,
+          ),
+        );
+      },
     );
   }
 }

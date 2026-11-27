@@ -25,6 +25,17 @@ bool isImageName(String name) {
 }
 
 /// 行内构建器。每渲染一次 new 一个，用 [owns] 把识别器交给外部统一释放。
+/// 1.61：高亮底色，与块编辑器保持一致。
+Color noteHighlightColor(String? code) {
+  return switch (code) {
+    'r' => const Color(0xFFFFCDD2),
+    'g' => const Color(0xFFC8E6C9),
+    'b' => const Color(0xFFBBDEFB),
+    'p' => const Color(0xFFE1BEE7),
+    _ => const Color(0xFFFFF59D),
+  };
+}
+
 class NoteInlineBuilder {
   NoteInlineBuilder({
     required this.assets,
@@ -122,8 +133,29 @@ class NoteInlineBuilder {
     ));
   }
 
-  /// 把一段纯文本拆成「普通文字 + 引用」。
+  /// 把一段纯文本拆成「高亮 + 普通文字 + 引用」。
   List<InlineSpan> textSpans(String text, TextStyle style) {
+    final out = <InlineSpan>[];
+    var cursor = 0;
+    for (final match in _highlight.allMatches(text)) {
+      if (match.start > cursor) {
+        out.addAll(_refSpans(text.substring(cursor, match.start), style));
+      }
+      out.add(TextSpan(
+        text: match.group(2),
+        style: style.copyWith(
+          backgroundColor: noteHighlightColor(match.group(1)),
+        ),
+      ));
+      cursor = match.end;
+    }
+    if (cursor < text.length) {
+      out.addAll(_refSpans(text.substring(cursor), style));
+    }
+    return out;
+  }
+
+  List<InlineSpan> _refSpans(String text, TextStyle style) {
     final out = <InlineSpan>[];
     var cursor = 0;
     for (final match in kRefPattern.allMatches(text)) {
@@ -138,6 +170,8 @@ class NoteInlineBuilder {
     }
     return out;
   }
+
+  static final _highlight = RegExp(r'==(?:\{([yrgbp])\})?([^=\n]+)==');
 
   InlineSpan _refSpan(bool embed, String rawName, TextStyle style) {
     if (embed && isImageName(rawName)) {

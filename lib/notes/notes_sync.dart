@@ -24,7 +24,10 @@ import 'package:pnote/notes/notes_paths.dart';
 const String kSyncStateFileName = '.sync.json';
 
 /// 单个文件的大小上限：超过就不同步（防止一个视频把整次同步拖死）。
-const int kMaxSyncFileBytes = 4 * 1024 * 1024;
+// 1.56：附件单文件上限从 4 MB 提到 32 MB —— 手机拍的照片常常 5–15 MB，
+// 以前会被静默跳过，用户看到的就是「图片没同步过去」。报文本身按 1 MB
+// 分帧（kBlobChunkBytes），所以放大上限不会撑爆单帧。
+const int kMaxSyncFileBytes = 32 * 1024 * 1024;
 
 /// 内容指纹：FNV-1a 64 位，转成 16 位十六进制。
 ///
@@ -346,8 +349,8 @@ class NotesSync {
     final name = p.posix.basename(rel);
     if (name == kSyncStateFileName || name == '.order.json') return true;
     if (name == kPurgeQueueFileName) return true; // 彻底删除的暂存清单
-    // 1.48：组清单是本机偏好（组可以多对多、合并规则未定），先不进同步。
-    if (name == '.groups.json') return true;
+    // 1.54：组清单（含每篇归属、折叠、手动顺序）随笔记同步，整文件按
+    // HLC 后写者胜——组数据很小，不为此再拆字段级合并。
     if (name.endsWith('.tmp')) return true; // 原子写的中间文件
     return false;
   }

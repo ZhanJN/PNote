@@ -57,7 +57,7 @@ class NotesTrashViewState extends State<NotesTrashView> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _loading = false);
-      _toast(e is NotesIoException ? e.message : '打不开 .trash：$e');
+      _toast(e is NotesIoException ? e.message : '打不开回收站：$e');
     }
   }
 

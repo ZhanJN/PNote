@@ -19,6 +19,7 @@ import 'package:pnote/notes/notes_model.dart';
 import 'package:pnote/notes/notes_render.dart';
 import 'package:pnote/notes/notes_store.dart';
 import 'package:pnote/ui/common/rename_dialog.dart';
+import 'package:pnote/ui/notes/block_editor.dart';
 
 class NoteEditorPage extends StatefulWidget {
   const NoteEditorPage({
@@ -46,7 +47,9 @@ class NoteEditorPage extends StatefulWidget {
 
 class _NoteEditorPageState extends State<NoteEditorPage> {
   final TextEditingController _controller = TextEditingController();
-  final FocusNode _focus = FocusNode();
+  final GlobalKey<BlockEditorState> _blockKey = GlobalKey<BlockEditorState>();
+  var _blocksSerial = 0;
+  int? _focusHeadingIndex;
   final ScrollController _scroll = ScrollController();
   Timer? _saveTimer;
   Map<String, File> _assets = <String, File>{};
@@ -54,6 +57,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   List<GlobalKey> _headingKeys = const <GlobalKey>[];
   bool _loading = true;
   bool _preview = false;
+  bool _source = false;
   bool _dirty = false;
   bool _saving = false;
   String? _error;
@@ -76,7 +80,6 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   void dispose() {
     _saveTimer?.cancel();
     _controller.dispose();
-    _focus.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -91,6 +94,24 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
         _assets = assets;
         _loading = false;
         _dirty = false;
+        _blocksSerial++;
+        // 1.55：已有内容的笔记默认进预览；只有空白笔记直接进编辑。
+        // 渲染/解析出错时回撤到编辑模式，绝不把用户挡在错误页上。
+        final hasContent = text.trim().isNotEmpty;
+        if (hasContent) {
+          try {
+            _doc = parseNoteSource(text, keepBlankLines: true);
+            _headingKeys = List<GlobalKey>.generate(
+              _doc!.headingItems.length,
+              (_) => GlobalKey(),
+            );
+            _preview = true;
+          } catch (_) {
+            _preview = false;
+            _doc = null;
+            _headingKeys = const <GlobalKey>[];
+          }
+        }
       });
       _controller.addListener(_onChanged);
       _applyInitialAnchor();
@@ -140,7 +161,14 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
         _error = null;
         _savedAt = DateTime.now();
       });
-      if (_preview) _refreshDoc();
+      if (_preview) {
+        try {
+          _refreshDoc();
+        } catch (_) {
+          setState(() => _preview = false);
+          _showMessage('预览失败，已切回编辑模式');
+        }
+      }
     } on NotesIoException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -152,7 +180,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   }
 
   void _refreshDoc() {
-    _doc = parseNoteSource(_controller.text);
+    _doc = parseNoteSource(_controller.text, keepBlankLines: true);
     _headingKeys = List<GlobalKey>.generate(
       _doc!.headingItems.length,
       (_) => GlobalKey(),
@@ -224,42 +252,88 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     final text = _controller.text;
     final caret = offset > text.length ? text.length : offset;
     _controller.selection = TextSelection.collapsed(offset: caret);
-    _focus.requestFocus();
+    // 1.57：块编辑器里没法只设一个全局光标，改成「聚焦第 N 个标题块」。
+    setState(() {
+      _focusHeadingIndex = index;
+      _blocksSerial++;
+    });
+  }
+
+  /// 1.60：源码模式——直接编辑整篇 Markdown，给需要精确控制格式的时候用。
+  void _toggleSource() {
+    setState(() {
+      _source = !_source;
+      if (_source) _preview = false;
+      FocusManager.instance.primaryFocus?.unfocus();
+    });
+    if (!_source) _blocksSerial++;
   }
 
   void _togglePreview() {
+    if (_source) setState(() => _source = false);
     if (_preview) {
       setState(() => _preview = false);
+      // 预览时锚点只能滚动，切回编辑后把光标补放到那一节。
+      final anchor = widget.initialAnchor;
+      if (anchor != null && anchor.trim().isNotEmpty) {
+        final doc = parseNoteSource(_controller.text);
+        final index =
+            doc.headingItems.indexWhere((item) => item.matches(anchor));
+        if (index >= 0) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _jumpToHeading(index, doc);
+          });
+        }
+      }
       return;
     }
-    _refreshDoc();
+    try {
+      _refreshDoc();
+    } catch (_) {
+      // 解析/渲染出错：不进预览，留在编辑模式。
+      _showMessage('这篇笔记的格式有点问题，先在编辑模式里改一下');
+      return;
+    }
     setState(() => _preview = true);
   }
 
-  Future<void> _insertAsset() async {
+  /// 块编辑器改完文本后回写到 `_controller`（保存/大纲/字数都还是看它）。
+  void _onBlocksChanged(String text) {
+    if (_mute) return;
+    _mute = true;
+    _controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _mute = false;
+    _onChanged();
+  }
+
+  /// 选图 + 导入素材，返回素材名（工具栏和 AppBar 的插入图片共用）。
+  Future<String?> _importAssetName() async {
     final picked = await openFile();
-    if (picked == null || !mounted) return;
+    if (picked == null) return null;
     try {
       final name = await widget.store.importAsset(_note, File(picked.path));
       final assets = await widget.store.assetsOf(_noteId);
-      if (!mounted) return;
-      setState(() => _assets = assets);
-      _insertText('![[$name]]');
-      _showMessage('已插入素材：$name');
+      if (mounted) setState(() => _assets = assets);
+      return name;
     } on NotesIoException catch (e) {
       _showMessage(e.message);
+      return null;
     }
   }
 
-  Future<void> _insertLink() async {
+  /// 选一篇笔记，返回 `[[名字]]` 片段。
+  Future<String?> _pickLinkSnippet() async {
     List<NoteFile> notes;
     try {
       notes = await widget.store.list();
     } on NotesIoException catch (e) {
       _showMessage(e.message);
-      return;
+      return null;
     }
-    if (!mounted) return;
+    if (!mounted) return null;
     final stem = await showModalBottomSheet<String>(
       context: context,
       builder: (context) => SafeArea(
@@ -277,8 +351,21 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
         ),
       ),
     );
-    if (stem == null || !mounted) return;
-    _insertText('[[$stem]]');
+    if (stem == null) return null;
+    return '[[$stem]]';
+  }
+
+  Future<void> _insertAsset() async {
+    final name = await _importAssetName();
+    if (name == null || !mounted) return;
+    _blockKey.currentState?.insertImageBlock(name);
+    _showMessage('已插入素材：$name');
+  }
+
+  Future<void> _insertLink() async {
+    final snippet = await _pickLinkSnippet();
+    if (snippet == null || !mounted) return;
+    _blockKey.currentState?.insertSnippet(snippet);
   }
 
   /// 反向链接（1.43）：谁引用了这篇笔记。点一条直接跳过去。
@@ -388,18 +475,6 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     widget.openNote(raw);
   }
 
-  void _insertText(String snippet) {
-    final value = _controller.value;
-    final selection = value.selection;
-    final start = selection.isValid ? selection.start : value.text.length;
-    final end = selection.isValid ? selection.end : value.text.length;
-    final text = value.text.replaceRange(start, end, snippet);
-    _controller.value = TextEditingValue(
-      text: text,
-      selection: TextSelection.collapsed(offset: start + snippet.length),
-    );
-  }
-
   void _showMessage(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
@@ -444,6 +519,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
         _dirty = false;
         _savedAt = DateTime.now();
         _error = null;
+        _blocksSerial++;
       });
       _showMessage('已改名为「$clean」');
     } on NotesIoException catch (e) {
@@ -492,6 +568,11 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
               tooltip: '反向链接（谁引用了这篇）',
               onPressed: _showBacklinks,
               icon: const Icon(Icons.hub_outlined),
+            ),
+            IconButton(
+              tooltip: _source ? '回到块编辑' : '源码模式（纯 Markdown）',
+              onPressed: _toggleSource,
+              icon: Icon(_source ? Icons.view_agenda_outlined : Icons.code),
             ),
             IconButton(
               tooltip: _preview ? '回到编辑' : '预览',
@@ -565,7 +646,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
       ));
     }
     if (_preview) {
-      final doc = _doc ?? parseNoteSource(_controller.text);
+      final doc = _doc ?? parseNoteSource(_controller.text, keepBlankLines: true);
       if (_headingKeys.length != doc.headingItems.length) {
         _headingKeys = List<GlobalKey>.generate(
           doc.headingItems.length,
@@ -575,33 +656,53 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
       return SingleChildScrollView(
         controller: _scroll,
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-        child: NoteRender(
-          doc: doc,
-          assets: _assets,
-          hasNote: widget.hasNote,
-          openNote: _openRef,
-          openAsset: _openAsset,
-          openUrl: _copyUrl,
-          headingKeys: _headingKeys,
+        // 1.56：预览在电脑上不拉满整块屏（一行太长难读），手机上仍是满宽。
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 860),
+            child: NoteRender(
+              doc: doc,
+              assets: _assets,
+              hasNote: widget.hasNote,
+              openNote: _openRef,
+              openAsset: _openAsset,
+              openUrl: _copyUrl,
+              headingKeys: _headingKeys,
+            ),
+          ),
         ),
       );
     }
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-      child: TextField(
-        controller: _controller,
-        focusNode: _focus,
-        maxLines: null,
-        expands: true,
-        textAlignVertical: TextAlignVertical.top,
-        keyboardType: TextInputType.multiline,
-        style: const TextStyle(fontSize: 15, height: 1.6),
-        decoration: const InputDecoration(
-          border: InputBorder.none,
-          hintText: '开始写…\n\n支持： # 标题、- 列表、**加粗**、> 引用、表格、'
-              '![[]] 图片、[[]] 笔记链接',
+    // 1.60：源码模式，直接编辑纯 Markdown。
+    if (_source) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        child: TextField(
+          controller: _controller,
+          maxLines: null,
+          expands: true,
+          textAlignVertical: TextAlignVertical.top,
+          style: const TextStyle(
+            fontFamily: 'monospace',
+            fontSize: 14,
+            height: 1.5,
+          ),
+          decoration: const InputDecoration(
+            border: InputBorder.none,
+            hintText: '这里是纯 Markdown，可以直接改',
+          ),
         ),
-      ),
+      );
+    }
+    // 1.57：块状编辑器。每个段落是一个块，标题/列表/待办/图片直接在原位排版。
+    return BlockEditor(
+      key: ValueKey<String>('blocks-$_blocksSerial-${_note.relPath}'),
+      initialText: _controller.text,
+      onChanged: _onBlocksChanged,
+      assetPath: (name) => _assets[name]?.path,
+      onPickImage: _importAssetName,
+      onPickLink: _pickLinkSnippet,
+      focusHeadingIndex: _focusHeadingIndex,
     );
   }
 

@@ -1,18 +1,19 @@
-/// 笔记组内顺序（`.order.json`）测试（1.46）。
+/// 笔记手动顺序测试（1.54）。
 ///
-/// 纯文件 I/O：临时目录 + [setNotesRootOverride]，不需要 runAsync。
+/// 1.54 起顺序只有一份：`.groups.json` 里的 `order`（组名 → 路径列表）。
+/// 时间排序是临时视图，不写盘、也不覆盖手动顺序；老的 `.order.json` 不再读取。
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:path/path.dart' as p;
+import 'package:pnote/notes/notes_groups.dart';
 import 'package:pnote/notes/notes_paths.dart';
 import 'package:pnote/notes/notes_store.dart';
 
 void main() {
   late Directory temp;
-  const store = NotesStore();
 
   setUp(() async {
     temp = await Directory.systemTemp.createTemp('pnote_order_');
@@ -24,85 +25,80 @@ void main() {
     if (await temp.exists()) await temp.delete(recursive: true);
   });
 
-  /// 直接铺一篇笔记（文件名决定 createdAt），返回库内相对路径。
-  Future<String> seed(String stamp, String title) async {
-    final rel = '2026/11/$stamp $title.md';
-    final file = File(p.join(temp.path, '2026', '11', '$stamp $title.md'));
-    await file.parent.create(recursive: true);
-    await file.writeAsString('# $title\n\n正文\n');
-    return rel;
-  }
+  test('手动顺序写在 .groups.json，读回来一字不差', () async {
+    const store = NotesStore();
+    await store.writeGroups(const NoteGroups(
+      groups: [NoteGroupDef(name: '工作')],
+      assign: {
+        '2026/11/a.md': '工作',
+        '2026/11/b.md': '工作',
+        '2026/11/c.md': '未分组',
+      },
+      order: {
+        '工作': ['2026/11/c.md', '2026/11/a.md', '2026/11/b.md'],
+      },
+    ));
 
-  test('默认按创建时间倒序（没有 .order.json 时）', () async {
-    final a = await seed('2026-11-21 0900', '周一');
-    final b = await seed('2026-11-22 0900', '周二');
-    final c = await seed('2026-11-23 0900', '周三');
-
-    final list = await store.list();
-    expect(list.map((note) => note.relPath).toList(), [c, b, a]);
+    final groups = await store.readGroups();
+    expect(groups.order['工作'],
+        ['2026/11/c.md', '2026/11/a.md', '2026/11/b.md']);
+    // 手动顺序不等于文件时间顺序，这里能存下来就说明没被时间挤掉。
+    expect(groups.groupOf('2026/11/a.md'), '工作');
   });
 
-  test('写 .order.json 后组内顺序跟着变，且文件落在库根', () async {
-    final a = await seed('2026-11-21 0900', '周一');
-    final b = await seed('2026-11-22 0900', '周二');
-    final c = await seed('2026-11-23 0900', '周三');
+  test('只动一个组的手动顺序，其他组不受影响', () async {
+    const store = NotesStore();
+    await store.writeGroups(const NoteGroups(
+      groups: [NoteGroupDef(name: '工作'), NoteGroupDef(name: '生活')],
+      order: {
+        '工作': ['a.md'],
+        '生活': ['b.md'],
+      },
+    ));
 
-    await store.writeOrder('2026-11', [a, c, b]);
-    expect(File(p.join(temp.path, kOrderFileName)).existsSync(), isTrue);
+    final current = await store.readGroups();
+    await store.writeGroups(current.withOrder('工作', ['x.md', 'a.md']));
 
-    final list = await store.list();
-    expect(list.map((note) => note.relPath).toList(), [a, c, b]);
-    expect(await store.readOrder(), {
-      '2026-11': [a, c, b],
+    final again = await store.readGroups();
+    expect(again.order['工作'], ['x.md', 'a.md']);
+    expect(again.order['生活'], ['b.md']);
+  });
+
+  test('v1 迁移后 v3 清单可继续写手动顺序', () async {
+    final v1 = jsonEncode(<String, Object?>{
+      '工作': ['2026/11/a.md'],
+      '生活': ['2026/11/b.md'],
     });
+    await File('${temp.path}/$kGroupsFileName').writeAsString(v1);
+
+    const store = NotesStore();
+    final migrated = await store.readGroupsMigrated();
+    await store.writeGroups(migrated.withOrder('工作', ['2026/11/a.md']));
+
+    final stored = jsonDecode(
+      await File('${temp.path}/$kGroupsFileName').readAsString(),
+    ) as Map<String, Object?>;
+    expect(stored['version'], 3);
+    final again = await store.readGroups();
+    expect(again.order['工作'], ['2026/11/a.md']);
   });
 
-  test('顺序表里没有的新笔记仍排在本月最上面', () async {
-    final a = await seed('2026-11-21 0900', '周一');
-    final b = await seed('2026-11-22 0900', '周二');
-    await store.writeOrder('2026-11', [a, b]);
+  test('老的 .order.json 不再被读取', () async {
+    // 即便放一个「把 a 排到最前」的旧顺序，清单也不会引用它。
+    await File('${temp.path}/.order.json').writeAsString(jsonEncode(<String, Object?>{
+      '2026-11': ['2026/11/a.md'],
+    }));
+    const store = NotesStore();
+    await store.writeGroups(const NoteGroups(
+      groups: [NoteGroupDef(name: '工作')],
+      order: {
+        '工作': ['2026/11/z.md'],
+      },
+    ));
 
-    final fresh = await seed('2026-11-24 0900', '新来的');
-    final list = await store.list();
-    expect(list.first.relPath, fresh);
-    expect(list.map((note) => note.relPath).toList(), [fresh, a, b]);
-  });
-
-  test('新的月份分组排在旧的上面，各自组内按自己的顺序', () async {
-    final nov = await seed('2026-11-21 0900', '十一月');
-    final decFile = File(p.join(temp.path, '2026', '12', '2026-12-02 0900 十二月.md'));
-    await decFile.parent.create(recursive: true);
-    await decFile.writeAsString('# 十二月\n\n');
-    final dec = '2026/12/2026-12-02 0900 十二月.md';
-
-    await store.writeOrder('2026-11', [nov]);
-    final list = await store.list();
-    expect(list.map((note) => note.relPath).toList(), [dec, nov]);
-  });
-
-  test('.order.json 坏掉时退回时间倒序，库照样能打开', () async {
-    final a = await seed('2026-11-21 0900', '周一');
-    final b = await seed('2026-11-22 0900', '周二');
-    await File(p.join(temp.path, kOrderFileName)).writeAsString('{ 这不是 JSON');
-
-    expect(await store.readOrder(), isEmpty);
-    final list = await store.list();
-    expect(list.map((note) => note.relPath).toList(), [b, a]);
-  });
-
-  test('writeOrder 只覆盖指定的分组，其它分组原样保留', () async {
-    await store.writeOrder('2026-11', ['x.md']);
-    await store.writeOrder('2026-12', ['y.md']);
-    await store.writeOrder('2026-11', ['z.md']);
-
-    expect(await store.readOrder(), {
-      '2026-11': ['z.md'],
-      '2026-12': ['y.md'],
-    });
-  });
-
-  test('monthKeyOf 补零到两位', () {
-    expect(monthKeyOf(DateTime(2026, 1, 5)), '2026-01');
-    expect(monthKeyOf(DateTime(2026, 11, 5)), '2026-11');
+    final groups = await store.readGroups();
+    expect(groups.order['工作'], ['2026/11/z.md']);
+    expect(await File('${temp.path}/.order.json').exists(), isTrue);
+    expect(kLegacyOrderFileName, '.order.json');
   });
 }

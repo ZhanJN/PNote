@@ -6,14 +6,14 @@
 
 ## 一、版本号规则
 
-- 功能版本：`1.51.0`（新增账号名）→ 小版本号 +1
-- 缺陷修复：`1.51.1`（修 1.51 的 bug，行为不变）
+- 功能版本：`1.62.1`（新增账号名）→ 小版本号 +1
+- 缺陷修复：`1.62.2`（修 1.51 的 bug，行为不变）
 - 协议版本独立演进：`pnote-sync/8`。**协议主版本变化时两端必须一起升级**，Release 说明里要写清楚
 
 `pubspec.yaml` 的 `version` 同时决定 Windows 文件版本与 Android `versionName`/`versionCode`：
 
 ```yaml
-version: 1.51.0+15100   # 语义版本 + 构建号（Android 靠 +N 判断升级）
+version: 1.62.1+16201   # 语义版本 + 构建号（Android 靠 +N 判断升级）
 ```
 
 每次发版 `+N` 必须比上一个安装包大，否则 Android 不允许覆盖安装。
@@ -23,7 +23,7 @@ version: 1.51.0+15100   # 语义版本 + 构建号（Android 靠 +N 判断升级
 ```bash
 flutter pub get
 flutter analyze          # 必须 No issues found
-flutter test             # 必须全部通过（当前 354 条）
+flutter test             # 必须全部通过（当前 409 条）
 ```
 
 同时确认：
@@ -68,7 +68,22 @@ Get-FileHash PNote-<版本>-windows-x64.zip -Algorithm SHA256
 Get-FileHash PNote-<版本>-android-arm64-v8a.apk -Algorithm SHA256
 ```
 
-## 四、提交与打标签
+## 四、正式版目录与归档
+
+发布目录按版本号命名，不再用 V1/V2/V3：
+
+```
+D:\PNote_<版本>\           例如 D:\PNote_1.62.1\，用户直接运行这里的 pc\pnote.exe
+  pc\                      Windows Release 全量文件
+  android\PNote.apk         手机安装包
+  使用说明.txt  版本说明.txt
+  PNote笔记库\              用户笔记（不打包进归档）
+```
+
+归档副本放在仓库上级目录（`..\PNote_<版本>`），用根目录的 `pack-release.bat` 重建：
+它从 `pubspec.yaml` 读版本号，整体重建并用 SHA-256 逐文件校验（`tool/pack_archive.py`）。
+
+## 五、提交与打标签
 
 ```bash
 git add -A
@@ -78,13 +93,13 @@ git tag -a v<版本> -m "PNote <版本> - <一句话主题>"
 git push origin v<版本>
 ```
 
-标签名统一 `v` + 语义版本（`v1.51.0`），Release 会自动关联到它对应的提交。
+标签名统一 `v` + 语义版本（`v1.62.1`），Release 会自动关联到它对应的提交。
 
-## 五、创建 Release（网页操作）
+## 六、创建 Release（网页操作）
 
 1. 打开 <https://github.com/ZhanJN/PNote/releases/new>
-2. **Choose a tag** 选刚推上去的 `v1.51.0`（若没有就手填，GitHub 会在发布时创建）
-3. **Release title**：`PNote 1.51.0 — 账号名（同步分组）`
+2. **Choose a tag** 选刚推上去的 `v1.62.1`（若没有就手填，GitHub 会在发布时创建）
+3. **Release title**：`PNote 1.62.1 — 编辑器与预览修正`
 4. **Describe this release**：写三段即可
    - 这一版多了什么（用户视角）
    - 怎么装（Windows 解压双击 / Android 直接装）
@@ -93,16 +108,16 @@ git push origin v<版本>
 6. 保持 **Set as the latest release**；不要勾 pre-release（除非是测试版）
 7. 点 **Publish release**
 
-## 六、创建 Release（命令行，等价操作）
+## 七、创建 Release（命令行，等价操作）
 
 装好 [GitHub CLI](https://cli.github.com/) 并 `gh auth login` 之后：
 
 ```bash
-gh release create v1.51.0 \
-  --title "PNote 1.51.0 — 账号名（同步分组）" \
-  --notes-file docs/release-notes/1.51.0.md \
-  PNote-1.51.0-windows-x64.zip \
-  PNote-1.51.0-android-arm64-v8a.apk
+gh release create v1.62.1 \
+  --title "PNote 1.62.1 — 编辑器与预览修正" \
+  --notes-file docs/release-notes/1.62.1.md \
+  PNote-1.62.1-windows-x64.zip \
+  PNote-1.62.1-android-arm64-v8a.apk
 ```
 
 没有 `gh` 时也可以用 REST API（需要 `repo` 权限的 token）：
@@ -111,22 +126,22 @@ gh release create v1.51.0 \
 curl -X POST -H "Authorization: token $TOKEN" \
      -H "Accept: application/vnd.github+json" \
      https://api.github.com/repos/ZhanJN/PNote/releases \
-     -d @release.json         # {"tag_name":"v1.51.0","name":"...","body":"...","draft":false}
+     -d @release.json         # {"tag_name":"v1.62.1","name":"...","body":"...","draft":false}
 
 curl -X POST -H "Authorization: token $TOKEN" \
      -H "Content-Type: application/zip" \
-     --data-binary @PNote-1.51.0-windows-x64.zip \
-     "https://uploads.github.com/repos/ZhanJN/PNote/releases/<release_id>/assets?name=PNote-1.51.0-windows-x64.zip"
+     --data-binary @PNote-1.62.1-windows-x64.zip \
+     "https://uploads.github.com/repos/ZhanJN/PNote/releases/<release_id>/assets?name=PNote-1.62.1-windows-x64.zip"
 ```
 
-## 七、发布后
+## 八、发布后
 
 - 打开 Release 页面确认两个资产都能下载、大小与上面记录一致
 - 确认 `main` 的 CI 仍是绿的（README 徽章来自 `.github/workflows/ci.yml`）
-- 本地归档副本用 `tool/pack_archive.py` 重建（它做清单 + SHA-256 校验，见 README「构建」一节）
+- 本地归档副本用 `pack-release.bat` 重建（读 `pubspec.yaml` 版本号，清单 + SHA-256 校验）
 - 把「下一个版本要做什么」记进 `docs/CHANGELOG.md` 的待办或 issue
 
-## 八、常见问题
+## 九、常见问题
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
