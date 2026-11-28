@@ -76,6 +76,7 @@ class BlockEditorState extends State<BlockEditor> {
   bool _blockSelecting = false;
   final ScrollController _scroll = ScrollController();
   final GlobalKey _listBoxKey = GlobalKey();
+  final GlobalKey _barKey = GlobalKey();
   Timer? _edgeTimer;
   Offset? _pointerAt;
   Offset? _downAt;
@@ -455,8 +456,73 @@ class BlockEditorState extends State<BlockEditor> {
     _notify();
   }
 
-  void _mergeIntoPrevious(int index) {
-    if (index <= 0) return;
+  static final RegExp _hlPattern =
+      RegExp(r'==\{([yrgbp])\}([^\n]*?)==|==([^\n]*?)==');
+
+  /// 1.63.1：高亮是「有/无」开关，颜色只决定新加时的底色。
+  /// 选中/光标已经落在某个高亮里（不论颜色）→ 去掉那层；否则包上。
+  void _toggleHighlight(String code) {
+    if (_entries.isEmpty) return;
+    final index = _lastFocused.clamp(0, _entries.length - 1);
+    final entry = _entries[index];
+    final text = entry.controller.text;
+    if (text.trim().isEmpty) return;
+    final sel = _effectiveSelection(entry);
+    final collapsed = !sel.isValid || sel.isCollapsed;
+    final caret = collapsed ? (sel.isValid ? sel.start : text.length) : sel.start;
+
+    for (final m in _hlPattern.allMatches(text)) {
+      final colored = m.group(1) != null;
+      final openLen = colored ? 5 : 2;
+      final bodyStart = m.start + openLen;
+      final bodyEnd = m.end - 2;
+      final inside = collapsed
+          ? (caret >= bodyStart && caret <= bodyEnd)
+          : (sel.start >= bodyStart && sel.end <= bodyEnd);
+      if (!inside) continue;
+      final inner = text.substring(bodyStart, bodyEnd);
+      final removed = (m.end - m.start) - inner.length;
+      final next = text.replaceRange(m.start, m.end, inner);
+      _commit(entry, next, caret > m.start ? caret - removed : caret);
+      return;
+    }
+
+    final open = code == 'y' ? '==' : '=={$code}';
+    const close = '==';
+    // 整块只有一层高亮（光标可能在边界、没被上面的区间匹配到）→ 再点一次去掉。
+    final whole = RegExp(r'^==(\{[yrgbp]\})?([^\n]*?)==$').firstMatch(text);
+    if (whole != null) {
+      final body = whole.group(2) ?? '';
+      if (!body.contains('==') && body.isNotEmpty) {
+        _commit(entry, body, body.length);
+        return;
+      }
+    }
+    if (collapsed) {
+      _commit(entry, '$open$text$close', text.length + open.length);
+    } else {
+      final selected = text.substring(sel.start, sel.end);
+      _commit(
+        entry,
+        text.replaceRange(sel.start, sel.end, '$open$selected$close'),
+        sel.start + open.length + selected.length,
+      );
+    }
+  }
+
+  void _commit(_BlockEntry entry, String next, int caret) {
+    entry.controller.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: caret.clamp(0, next.length)),
+    );
+    entry.block.text = next;
+    entry.lastText = next;
+    entry.savedSelection = null;
+    entry.focus.requestFocus();
+    _notify();
+  }
+
+  void _mergeIntoPrevious(int index) {    if (index <= 0) return;
     final current = _entries[index];
     final previous = _entries[index - 1];
     if (previous.block.kind == MdBlockKind.image) return;
@@ -650,7 +716,8 @@ class BlockEditorState extends State<BlockEditor> {
       },
       child: Column(
         children: [
-          if (_blockSelecting) _blockSelectionBar(theme),
+          if (_blockSelecting)
+            KeyedSubtree(key: _barKey, child: _blockSelectionBar(theme)),
           Expanded(
             child: KeyedSubtree(
               key: ValueKey(_serial),
@@ -716,8 +783,23 @@ class BlockEditorState extends State<BlockEditor> {
     return null;
   }
 
+  /// 1.63.1：点「复制/剪切/取消」时，明确把选择条区域排除在选区判定之外，
+  /// 否则手机上一按按钮，选区会跳成按钮正下方那一块。
+  bool _tapInBar(Offset global) {
+    final box = _barKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return false;
+    final rect = box.localToGlobal(Offset.zero) & box.size;
+    return rect.contains(global);
+  }
+
   void _onPointerDown(PointerDownEvent event) {
     _rememberSelections();
+    if (_blockSelecting && _tapInBar(event.position)) {
+      _pointerDown = false;
+      _longPress?.cancel();
+      _longPress = null;
+      return;
+    }
     final row = _rowAt(event.position, edge: false);
     if (_blockSelecting) {
       // 1.63：点选择条/工具条时 row == null，绝不能把 _pointerAt 挪到那里，
@@ -737,7 +819,9 @@ class BlockEditorState extends State<BlockEditor> {
     _selFocus = row;
     _longPress?.cancel();
     if (row == null) return;
-    _longPress = Timer(const Duration(milliseconds: 450), () {
+    // 1.63.1：320ms 比系统长按（约 400–500ms）更早触发，先接管为整块选择，
+    // 避免手机上系统选择菜单和块选择同时出现，复制到错的文本。
+    _longPress = Timer(const Duration(milliseconds: 320), () {
       if (!mounted || !_pointerDown) return;
       // 进入整块选择：先让文本框失焦，避免和文字选区/键盘打架。
       for (final entry in _entries) {
@@ -941,7 +1025,8 @@ class BlockEditorState extends State<BlockEditor> {
     if (range.isEmpty) return;
     final text = [for (final i in range) _blockSource(_entries[i])].join('\n');
     Clipboard.setData(ClipboardData(text: text));
-    _clearBlockSelection();
+    // 1.63.1：复制后保留选区，方便接着剪切/对照；退出点是「取消」或点空白。
+    _stopEdgeScroll();
     _showTip('已复制 ${range.length} 段');
   }
 
@@ -1204,13 +1289,13 @@ class BlockEditorState extends State<BlockEditor> {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _icon(Icons.border_color_outlined, '高亮', () => _toggleWrap('==', '==')),
+        _icon(Icons.border_color_outlined, '高亮', () => _toggleHighlight('y')),
         PopupMenuButton<String>(
           tooltip: '高亮颜色',
           padding: EdgeInsets.zero,
           iconSize: 18,
           onSelected: (code) {
-            _toggleWrap(code == 'y' ? '==' : '=={$code}', '==');
+            _toggleHighlight(code);
           },
           itemBuilder: (context) => [
             for (final item in colors.entries)
@@ -1323,9 +1408,13 @@ class _Prefix extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 1.63.1：与正文用同一行高、同一上边距，序号/圆点才和文字在同一条基线上。
     return Padding(
-      padding: const EdgeInsets.only(top: 6, right: 6),
-      child: Text(text, style: const TextStyle(fontSize: 15)),
+      padding: const EdgeInsets.only(top: 4, right: 6),
+      child: Text(
+        text,
+        style: const TextStyle(fontSize: 15, height: 1.55),
+      ),
     );
   }
 }
@@ -1375,7 +1464,7 @@ class _RichController extends TextEditingController {
   TextStyle baseStyle = const TextStyle();
 
   static final _inline = RegExp(
-    r'(==\{[yrgbp]\}[^=\n]+==)|(==[^=\n]+==)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(~~[^~]+~~)|(`[^`]+`)|(\[\[[^\]]+\]\])|(\[[^\]]+\]\([^)]+\))',
+    r'(==\{[yrgbp]\}[^\n]*?==)|(==[^\n]*?==)|(\*\*[^\n*]+?\*\*)|(\*[^\n*]+?\*)|(~~[^\n~]+?~~)|(`[^`\n]+?`)|(\[\[[^\]\n]+\]\])|(\[[^\]\n]+\]\([^)\n]+\))',
   );
 
   @override
@@ -1384,60 +1473,76 @@ class _RichController extends TextEditingController {
     TextStyle? style,
     required bool withComposing,
   }) {
+    // 中文输入法在组字（拼音未上屏）时，带隐藏标记的富文本容易把候选框/光标
+    // 放到错位置。组字期间退回纯文本，上屏后再上样式。
+    if (withComposing &&
+        value.composing.isValid &&
+        !value.composing.isCollapsed) {
+      return TextSpan(style: baseStyle, text: text);
+    }
     final theme = Theme.of(context);
+    return TextSpan(
+      style: baseStyle,
+      children: _children(text, theme, baseStyle),
+    );
+  }
+
+  /// 1.63.1：递归解析，支持嵌套（粗体里套高亮、高亮里套斜体），
+  /// 这样内层标记也会被隐藏，不会露出 `==` / `**`。
+  List<InlineSpan> _children(String text, ThemeData theme, TextStyle? style) {
     final spans = <InlineSpan>[];
     var cursor = 0;
     for (final match in _inline.allMatches(text)) {
       if (match.start > cursor) {
-        spans.add(TextSpan(text: text.substring(cursor, match.start)));
+        spans.add(
+          TextSpan(text: text.substring(cursor, match.start), style: style),
+        );
       }
-      final raw = match.group(0)!;
-      spans.add(_spanFor(raw, theme));
+      spans.add(_spanFor(match.group(0)!, theme, style));
       cursor = match.end;
     }
     if (cursor < text.length) {
-      spans.add(TextSpan(text: text.substring(cursor)));
+      spans.add(TextSpan(text: text.substring(cursor), style: style));
     }
-    return TextSpan(style: baseStyle, children: spans);
+    return spans;
   }
 
-  TextSpan _spanFor(String raw, ThemeData theme) {
+  TextSpan _spanFor(String raw, ThemeData theme, TextStyle? style) {
     if (raw.startsWith('==')) {
       final colored = raw.startsWith('=={');
       final code = colored ? raw.substring(3, 4) : 'y';
       final bodyStart = colored ? 5 : 2;
       final body = raw.substring(bodyStart, raw.length - 2);
+      final bodyStyle = (style ?? const TextStyle())
+          .copyWith(backgroundColor: highlightColor(code));
       return TextSpan(
         children: [
           TextSpan(text: raw.substring(0, bodyStart), style: _marker(theme)),
-          TextSpan(
-            text: body,
-            style: TextStyle(backgroundColor: highlightColor(code)),
-          ),
+          ..._children(body, theme, bodyStyle),
           TextSpan(text: '==', style: _marker(theme)),
         ],
       );
     }
     if (raw.startsWith('**')) {
+      final body = raw.substring(2, raw.length - 2);
+      final bodyStyle =
+          (style ?? const TextStyle()).copyWith(fontWeight: FontWeight.w700);
       return TextSpan(
         children: [
           TextSpan(text: '**', style: _marker(theme)),
-          TextSpan(
-            text: raw.substring(2, raw.length - 2),
-            style: const TextStyle(fontWeight: FontWeight.w700),
-          ),
+          ..._children(body, theme, bodyStyle),
           TextSpan(text: '**', style: _marker(theme)),
         ],
       );
     }
     if (raw.startsWith('~~')) {
+      final body = raw.substring(2, raw.length - 2);
+      final bodyStyle = (style ?? const TextStyle())
+          .copyWith(decoration: TextDecoration.lineThrough);
       return TextSpan(
         children: [
           TextSpan(text: '~~', style: _marker(theme)),
-          TextSpan(
-            text: raw.substring(2, raw.length - 2),
-            style: const TextStyle(decoration: TextDecoration.lineThrough),
-          ),
+          ..._children(body, theme, bodyStyle),
           TextSpan(text: '~~', style: _marker(theme)),
         ],
       );
@@ -1486,13 +1591,13 @@ class _RichController extends TextEditingController {
       );
     }
     // 单个 *斜体*
+    final body = raw.substring(1, raw.length - 1);
+    final bodyStyle =
+        (style ?? const TextStyle()).copyWith(fontStyle: FontStyle.italic);
     return TextSpan(
       children: [
         TextSpan(text: '*', style: _marker(theme)),
-        TextSpan(
-          text: raw.substring(1, raw.length - 1),
-          style: const TextStyle(fontStyle: FontStyle.italic),
-        ),
+        ..._children(body, theme, bodyStyle),
         TextSpan(text: '*', style: _marker(theme)),
       ],
     );

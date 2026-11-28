@@ -3,7 +3,7 @@
 [![CI](https://github.com/ZhanJN/PNote/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhanJN/PNote/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/ZhanJN/PNote)](https://github.com/ZhanJN/PNote/releases/latest)
 
-> 1.63（2026-11-28，块编辑器热修）· 最新 Release 仍是 [v1.62.1](https://github.com/ZhanJN/PNote/releases/tag/v1.62.1)
+> 1.63.1（2026-11-28，编辑器三修）· 最新 Release 仍是 [v1.62.1](https://github.com/ZhanJN/PNote/releases/tag/v1.62.1)
 
 一个纯局域网、无账号、无云端的极简待办 + 笔记应用。Flutter 编写，Windows 与 Android 共用一套代码，数据以「Markdown 文件 + SQLite」形式存在本地，两台设备连同一个 Wi-Fi 就能互相同步。
 
@@ -47,7 +47,7 @@ lib/
     notes/                   笔记列表、编辑器、行、菜单
     trash/                   统一回收站（任务 / 笔记两页签）
     reminders/  settings/  devices/  common/
-test/                        413 条单元/组件测试
+test/                        415 条单元/组件测试
 tool/                        调试探针（发现、扫描、拨号、打包归档）
 docs/                        架构、协议、变更记录、界面截图
 ```
@@ -59,7 +59,7 @@ docs/                        架构、协议、变更记录、界面截图
 
 ```bash
 flutter pub get
-flutter test                 # 413 条
+flutter test                 # 415 条
 flutter analyze
 flutter build windows --release
 flutter build apk --release --split-per-abi

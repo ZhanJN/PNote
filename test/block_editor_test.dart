@@ -517,6 +517,55 @@ void main() {
     expect(clip, contains('甲'));
     expect(clip, contains('乙'));
   });
+  testWidgets('1.63.1 光标在彩色高亮里再点高亮会整层去掉', (tester) async {
+    last = '';
+    await tester.pumpWidget(wrap('=={r}重点=='));
+    await tester.pump();
+    await tester.tap(find.byType(TextField).first);
+    await tester.pump();
+    await tester.tap(find.byTooltip('高亮'));
+    await tester.pump();
+    expect(last, '重点');
+  });
+
+  testWidgets('1.63.1 点复制后选区仍保留', (tester) async {
+    last = '';
+    String? clip;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          clip = (call.arguments as Map)['text'] as String?;
+        }
+        return null;
+      },
+    );
+    addTearDown(() {
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      );
+    });
+    await tester.pumpWidget(wrap('甲\n乙\n丙'));
+    await tester.pump();
+    final gesture =
+        await tester.startGesture(tester.getCenter(find.byType(TextField).first));
+    await tester.pump(const Duration(milliseconds: 500));
+    await gesture.up();
+    await tester.pump();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.tapAt(tester.getCenter(find.byType(TextField).at(2)));
+    await tester.pump();
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pump();
+    expect(find.text('已选 3 段'), findsOneWidget);
+    await tester.tap(find.text('复制'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(clip, contains('甲'));
+    expect(find.text('已选 3 段'), findsOneWidget);
+  });
+
   testWidgets('1.63 粘贴带空行的多行文本会拆成多个块且空行保留', (tester) async {
     last = '';
     await tester.pumpWidget(wrap(''));
