@@ -1,6 +1,6 @@
 # 架构
 
-> 版本 1.63 · 协议 `pnote-sync/8` · 数据库 schema 6
+> 版本 1.64.2 · 协议 `pnote-sync/8` · 数据库 schema 6
 
 ## 账号（同步分组，1.51）
 
@@ -50,11 +50,13 @@ platform/    平台能力：通知、路径、设备名
 ## 笔记：文件即真相
 
 - 路径：`笔记库/<年>/<月>/YYYY-MM-DD HHmm 标题.md`，素材在同名 `.md` 去掉后缀的 `.assets/` 里。
-- 解析：`markdown` 包做 AST，自定义语法只有四种 —— `[[笔记]]`、`![[附件]]`、`#标题`（大纲/锚点）、`^块id`（暂未使用）。
+- 解析：`markdown` 包做 AST，自定义语法只有六种 —— `[[笔记]]`、`![[附件]]`、`#标题`（大纲/锚点）、`^块id`（暂未使用）、`==高亮==`（可带颜色）、`::: left/center/right` 对齐块。
 - 组：库根 `.groups.json`（v3）记录组名、颜色、折叠、上下顺序、父组与置顶；一篇笔记只属于一个组（`assign`），组可多级嵌套，组本身也能置顶。组清单**随笔记同步**（整文件按 HLC 后写者胜）。
 - 顺序：手动顺序存 `.groups.json` 的 `order`（按组或未分组）；时间排序（创建/修改 ↑↓）只影响当前显示，切回「手动」即恢复，绝不写盘覆盖手排顺序。
 - 同步状态：`.sync.json` 存每个文件的 `{hlc, sha, size}` 与彻底删除记录；`.purge.json` 是「文件层 → 同步层」的暂存队列（文件层不知道 HLC 的细节）。
-- 附件：单文件 ≤ 32 MB 才同步，按 1 MB 分块走 base64 帧。\n- 编辑器：`markdown_blocks.dart` 把正文解析成 13 种块，`block_editor.dart` 每块一个 TextField（所以跨段操作靠整段框选）；预览仍用 AST。多出的语法只有 `==高亮==`（可带颜色）与 `::: left/center/right` 对齐块。
+- 附件：单文件 ≤ 32 MB 才同步，按 1 MB 分块走 base64 帧。
+- 编辑器（legacy，默认）：`markdown_blocks.dart` 把正文解析成 13 种块，`block_editor.dart` 每块一个 TextField（所以跨段操作靠整段框选）；预览仍用 AST。
+- 编辑器（PEditor，1.64 起实验）：appflowy_editor 6.2.0 的 fork 在 `third_party/appflowy_editor`；`lib/notes/pe_markdown.dart` 做 Markdown⇄Document，`lib/ui/notes/pe_editor.dart` 做输入与 120 ms 防抖保存；设置项 `editor_kernel` 在 legacy / pe 之间切换，默认 legacy。
 
 ## 关键不变量
 
