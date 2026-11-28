@@ -27,12 +27,13 @@ bool isImageName(String name) {
 /// 行内构建器。每渲染一次 new 一个，用 [owns] 把识别器交给外部统一释放。
 /// 1.61：高亮底色，与块编辑器保持一致。
 Color noteHighlightColor(String? code) {
+  // 1.63.3：半透明底色，深色主题下白字也能看清。
   return switch (code) {
-    'r' => const Color(0xFFFFCDD2),
-    'g' => const Color(0xFFC8E6C9),
-    'b' => const Color(0xFFBBDEFB),
-    'p' => const Color(0xFFE1BEE7),
-    _ => const Color(0xFFFFF59D),
+    'r' => const Color(0x59EF5350),
+    'g' => const Color(0x594CAF50),
+    'b' => const Color(0x5942A5F5),
+    'p' => const Color(0x59AB47BC),
+    _ => const Color(0x59FFEB3B),
   };
 }
 

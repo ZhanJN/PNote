@@ -663,6 +663,25 @@ void main() {
     expect(last, '**甲乙丙**');
     expect(field.controller!.selection.baseOffset, 3);
   });
+
+  testWidgets('1.63.3 删除当前行删的是光标所在行，不是下一行', (tester) async {
+    last = '';
+    await tester.pumpWidget(wrap('一\n二\n三'));
+    await tester.pump();
+
+    await tester.tap(find.byType(TextField).at(1));
+    await tester.pump();
+    await tester.tap(find.byTooltip('删除当前行'));
+    await tester.pump();
+
+    // 先清空第二段，第三段必须还在
+    expect(last, '一\n\n三');
+
+    // 再点一次：空段并入上一段
+    await tester.tap(find.byTooltip('删除当前行'));
+    await tester.pump();
+    expect(last, '一\n三');
+  });
 }
 
 TextSpan? _findText(InlineSpan span, String text) {

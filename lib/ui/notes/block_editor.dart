@@ -69,6 +69,16 @@ class BlockEditorState extends State<BlockEditor> {
   var _serial = 0;
   var _lastFocused = 0;
 
+  /// 1.63.3：当前块按真实焦点定位。之前用的是构建时捕获的 index，
+  /// 增删块后索引会错位（点「删除当前行」删到下一行）。
+  int _currentIndex() {
+    if (_entries.isEmpty) return 0;
+    for (var i = 0; i < _entries.length; i++) {
+      if (_entries[i].focus.hasFocus) return i;
+    }
+    return _lastFocused.clamp(0, _entries.length - 1);
+  }
+
   // 1.59：整块跨行框选（不是文本选区）。
   // 1.60：改为长按 450 ms 才进入，避免拖动/点按误触；进入后可点按或拖动扩展。
   int? _selAnchor;
@@ -267,7 +277,7 @@ class BlockEditorState extends State<BlockEditor> {
   /// 语义和退格一致：有内容先清空，空了再按一次才并到上一块。
   void deleteCurrentRow() {
     if (_entries.length > 1) {
-      final index = _lastFocused.clamp(0, _entries.length - 1);
+      final index = _currentIndex();
       final entry = _entries[index];
       if (entry.controller.text.isNotEmpty &&
           entry.block.kind != MdBlockKind.image &&
@@ -335,7 +345,7 @@ class BlockEditorState extends State<BlockEditor> {
   }
 
   void _wrapSelection(String left, String right) {
-    final index = _lastFocused.clamp(0, _entries.length - 1);
+    final index = _currentIndex();
     final entry = _entries[index];
     final value = entry.controller.value;
     final selection = _effectiveSelection(entry);
@@ -387,7 +397,7 @@ class BlockEditorState extends State<BlockEditor> {
   /// 1.63.2：加/去标记后把选区放回正文，而不是跳到块尾——否则看起来
   /// 像「App 的逻辑光标」和「屏幕上闪的光标」分了家，还得再点一次。
   void _toggleWrap(String open, String close) {
-    final index = _lastFocused.clamp(0, _entries.length - 1);
+    final index = _currentIndex();
     final entry = _entries[index];
     final text = entry.controller.text;
     if (text.trim().isEmpty) return;
@@ -468,7 +478,7 @@ class BlockEditorState extends State<BlockEditor> {
   /// - 没有选区时，把整块当作选区。
   void _toggleHighlight(String code) {
     if (_entries.isEmpty) return;
-    final entry = _entries[_lastFocused.clamp(0, _entries.length - 1)];
+    final entry = _entries[_currentIndex()];
     final text = entry.controller.text;
     if (text.trim().isEmpty) return;
     final selection = _effectiveSelection(entry);
@@ -714,7 +724,7 @@ class BlockEditorState extends State<BlockEditor> {
       }
       return false;
     }
-    final index = _lastFocused.clamp(0, _entries.length - 1);
+    final index = _currentIndex();
     final entry = _entries[index];
     if (!entry.focus.hasFocus) return false;
     final selection = entry.controller.selection;
@@ -732,30 +742,8 @@ class BlockEditorState extends State<BlockEditor> {
     return false;
   }
 
-  KeyEventResult _onKey(int index, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
-    // 1.60：合并后旧焦点闭包可能还带着旧下标，先挡掉越界。
-    if (index < 0 || index >= _entries.length) return KeyEventResult.ignored;
-    final entry = _entries[index];
-    final selection = entry.controller.selection;
-    if (!selection.isValid || !selection.isCollapsed) {
-      return KeyEventResult.ignored;
-    }
-    if (event.logicalKey == LogicalKeyboardKey.backspace &&
-        selection.baseOffset == 0) {
-      _mergeIntoPrevious(index);
-      return KeyEventResult.handled;
-    }
-    if (event.logicalKey == LogicalKeyboardKey.delete &&
-        selection.baseOffset == entry.controller.text.length) {
-      _mergeNext(index);
-      return KeyEventResult.handled;
-    }
-    return KeyEventResult.ignored;
-  }
-
   void _convert(MdBlockKind kind) {
-    final index = _lastFocused.clamp(0, _entries.length - 1);
+    final index = _currentIndex();
     final entry = _entries[index];
     // 再点一次同一个类型 → 回到正文（标题/列表/引用/代码都是开关）。
     final target = entry.block.kind == kind && kind != MdBlockKind.paragraph
@@ -998,8 +986,8 @@ class BlockEditorState extends State<BlockEditor> {
     }
     final down = _downAt;
     if (!_pointerDown || down == null) return;
-    // 长按要求手指/鼠标基本不动；移动超过 8 像素就取消，避免误触。
-    if ((event.position - down).distance > 8) {
+    // 长按要求手指/鼠标基本不动；移动超过 3 像素就取消，避免直接拖拉选字时误触。
+    if ((event.position - down).distance > 3) {
       _longPress?.cancel();
       _longPress = null;
     }
@@ -1230,7 +1218,8 @@ class BlockEditorState extends State<BlockEditor> {
           ?leading,
           Expanded(
             child: Focus(
-              onKeyEvent: (node, event) => _onKey(index, event),
+              // 1.63.3：边界退格/Delete 统一由 _onHardwareKey 处理。
+              // 这里再处理一次会和它重复执行（分割线被删后文字又被并一次）。
               child: TextField(
                 controller: entry.controller,
                 focusNode: entry.focus,
@@ -1245,9 +1234,9 @@ class BlockEditorState extends State<BlockEditor> {
                 ),
                 keyboardType: TextInputType.multiline,
                 textInputAction: TextInputAction.newline,
-                onTap: () => _lastFocused = index,
+                onTap: () => _lastFocused = _entries.indexOf(entry),
                 onChanged: (value) {
-                  _lastFocused = index;
+                  _lastFocused = _entries.indexOf(entry);
                   _onBlockTextChanged(entry, value);
                 },
               ),
@@ -1348,7 +1337,7 @@ class BlockEditorState extends State<BlockEditor> {
 
   void _setAlign(String value) {
     if (_entries.isEmpty) return;
-    final index = _lastFocused.clamp(0, _entries.length - 1);
+    final index = _currentIndex();
     final block = _entries[index].block;
     setState(() {
       block.align = block.align == value ? '' : value;
@@ -1480,12 +1469,13 @@ class BlockEditorState extends State<BlockEditor> {
 
 /// 1.61：高亮底色。`y` 黄（默认）、`r` 红、`g` 绿、`b` 蓝、`p` 紫。
 Color highlightColor(String? code) {
+  // 1.63.3：改成半透明底色（约 35%），深色主题下不再「亮底白字」看不清。
   return switch (code) {
-    'r' => const Color(0xFFFFCDD2),
-    'g' => const Color(0xFFC8E6C9),
-    'b' => const Color(0xFFBBDEFB),
-    'p' => const Color(0xFFE1BEE7),
-    _ => const Color(0xFFFFF59D),
+    'r' => const Color(0x59EF5350),
+    'g' => const Color(0x594CAF50),
+    'b' => const Color(0x5942A5F5),
+    'p' => const Color(0x59AB47BC),
+    _ => const Color(0x59FFEB3B),
   };
 }
 
