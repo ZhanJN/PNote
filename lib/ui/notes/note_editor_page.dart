@@ -617,10 +617,12 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
       },
       child: Scaffold(
         appBar: AppBar(
-          // 1.65.3：标题要和正文拉开距离，否则看着像一行普通文字。
-          titleTextStyle: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontSize: 24,
-                fontWeight: FontWeight.w600,
+          // 1.65.5：标题与正文同字号（用户要求），靠左一点；超出用省略号，
+          // 绝不和右侧按钮重叠。
+          titleSpacing: 4,
+          titleTextStyle: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
               ),
           title: InkWell(
             onTap: _rename,
