@@ -1,8 +1,18 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:pnote/ui/notes/pe_editor.dart';
+
+/// 1×1 透明 PNG，够 Image.file 解码用。
+final Uint8List _tinyPng = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGA'
+  'hKmMIQAAAABJRU5ErkJggg==',
+);
 
 void main() {
   Widget wrap(Widget child, {ThemeData? theme}) {
@@ -68,6 +78,62 @@ void main() {
     expect(find.byType(MobileToolbar), findsOneWidget);
   });
 
+  testWidgets('1.65 手机工具条的插图按钮会选素材并插入图片', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('pe_img_toolbar');
+    addTearDown(() {
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+    final file = File('${dir.path}/新图.png')..writeAsBytesSync(_tinyPng);
+
+    tester.view.physicalSize = const Size(400, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    var picked = 0;
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '正文',
+          onChanged: (_) {},
+          onPickImage: () async {
+            picked++;
+            return '新图.png';
+          },
+          assetPath: (name) => name == '新图.png' ? file.path : null,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    // MobileToolbar 只有存在选区时才显示按钮，先点一下正文让光标落进去。
+    await tester.tap(find.byType(AppFlowyRichText).first);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byType(MobileToolbar), findsOneWidget);
+
+    // 插图按钮排在最后一个，工具条横向滚动，先把它滚出来。
+    final toolbarList = find.descendant(
+      of: find.byType(MobileToolbar),
+      matching: find.byType(ListView),
+    );
+    await tester.drag(toolbarList.last, const Offset(-320, 0));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byIcon(Icons.image_outlined), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.image_outlined));
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(picked, 1);
+    final state = tester.state<PEditorState>(find.byType(PEditor));
+    expect(
+      state.editorState.document.root.children.any(
+        (node) => node.type == 'image',
+      ),
+      isTrue,
+    );
+  });
+
   testWidgets('1.64.1 图片节点后自动补一个空段落', (tester) async {
     await tester.pumpWidget(
       wrap(PEditor(initialText: '正文', onChanged: (_) {})),
@@ -83,5 +149,68 @@ void main() {
     await editorState.apply(transaction);
     await tester.pump(const Duration(milliseconds: 300));
     expect(editorState.document.root.children.last.type, 'paragraph');
+  });
+
+  testWidgets('1.65 打开笔记时 ![[素材名]] 变成可显示的图片节点', (tester) async {
+    // widget 测试跑在 FakeAsync 里，异步文件 IO 永远等不到，必须用同步 IO。
+    final dir = Directory.systemTemp.createTempSync('pe_img_open');
+    addTearDown(() {
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+    final file = File('${dir.path}/照片.png')..writeAsBytesSync(_tinyPng);
+
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '上面\n\n![[照片.png]]\n\n下面',
+          onChanged: (_) {},
+          assetPath: (name) => name == '照片.png' ? file.path : null,
+        ),
+      ),
+    );
+    // 图片块会触发真实的 FileImage 解码，pumpAndSettle 在这里等不到静止，
+    // 只推固定帧数（项目坑：widget 测试不要 pumpAndSettle）。
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    final state = tester.state<PEditorState>(find.byType(PEditor));
+    final image = state.editorState.document.root.children.firstWhere(
+      (node) => node.type == 'image',
+    );
+    expect(image.attributes['url'], file.path);
+  });
+
+  testWidgets('1.65 工具栏插入图片：出现图片节点并写回 ![[素材名]]', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('pe_img_insert');
+    addTearDown(() {
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+    final file = File('${dir.path}/新图.png')..writeAsBytesSync(_tinyPng);
+
+    final controller = PeEditorController();
+    var markdown = '';
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '正文',
+          onChanged: (text) => markdown = text,
+          controller: controller,
+          assetPath: (name) => name == '新图.png' ? file.path : null,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await controller.insertImage('新图.png');
+    await tester.pump(const Duration(milliseconds: 200));
+
+    final state = tester.state<PEditorState>(find.byType(PEditor));
+    expect(
+      state.editorState.document.root.children.any((node) => node.type == 'image'),
+      isTrue,
+    );
+    expect(markdown, contains('![[新图.png]]'));
   });
 }

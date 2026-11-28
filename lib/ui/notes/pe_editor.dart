@@ -5,6 +5,34 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../notes/pe_markdown.dart';
 
+/// 外层页面持有的 PEditor 句柄：插入图片、回写 Markdown。
+///
+/// 编辑区本身用 `ValueKey('pe-…')` 控制重建，不能再挂第二个 Key，
+/// 所以页面通过这个句柄而不是 GlobalKey 触达编辑器。
+class PeEditorController {
+  PEditorState? _state;
+
+  bool get attached => _state != null;
+
+  void _attach(PEditorState state) {
+    _state = state;
+  }
+
+  void _detach(PEditorState state) {
+    if (_state == state) {
+      _state = null;
+    }
+  }
+
+  /// 把已经导入笔记库的素材插到光标处；没有光标时追加到文末。
+  Future<void> insertImage(String name) async {
+    await _state?.insertImage(name);
+  }
+
+  /// 把编辑器里还没回写的输入转成 Markdown；没有编辑器时返回 null。
+  String? flush() => _state?.flush();
+}
+
 /// PNote 的新编辑器内核：appflowy_editor（fork 在 third_party/）。
 ///
 /// 只负责「Markdown 文本 ⇄ 文档」和编辑体验；保存仍由外层页面的
@@ -16,12 +44,24 @@ class PEditor extends StatefulWidget {
     required this.onChanged,
     this.readOnly = false,
     this.autoFocus = false,
+    this.controller,
+    this.onPickImage,
+    this.assetPath,
   });
 
   final String initialText;
   final ValueChanged<String> onChanged;
   final bool readOnly;
   final bool autoFocus;
+
+  /// 外层页面的句柄（插入图片、flush）。
+  final PeEditorController? controller;
+
+  /// 选图并导入笔记库，返回素材名；为空表示这个内核不收图片。
+  final Future<String?> Function()? onPickImage;
+
+  /// 素材名 → 磁盘绝对路径，渲染 `![[素材名]]` 时用。
+  final String? Function(String name)? assetPath;
 
   @override
   State<PEditor> createState() => PEditorState();
@@ -43,9 +83,13 @@ class PEditorState extends State<PEditor> {
     super.initState();
     _lastMarkdown = widget.initialText;
     _editorState = EditorState(
-      document: peDocumentFromMarkdown(widget.initialText),
+      document: peDocumentFromMarkdown(
+        widget.initialText,
+        resolveImage: widget.assetPath,
+      ),
     );
     _sub = _editorState.transactionStream.listen((_) => _onTransaction());
+    widget.controller?._attach(this);
   }
 
   void _onTransaction() {
@@ -104,10 +148,217 @@ class PEditorState extends State<PEditor> {
     return markdown;
   }
 
+  /// 1.65：把已导入的素材插到光标处，并在图片后留一个空段落。
+  ///
+  /// 素材地址在这里才换成绝对路径——磁盘上的 Markdown 仍然只有素材名。
+  Future<void> insertImage(String name) async {
+    if (widget.readOnly) {
+      return;
+    }
+    final src = widget.assetPath?.call(name) ?? name;
+    final image = imageNode(url: src);
+    final paragraph = paragraphNode();
+    final selection = _editorState.selection;
+    final anchor = (selection == null || !selection.isCollapsed)
+        ? null
+        : _editorState.getNodeAtPath(selection.end.path);
+    if (anchor == null) {
+      final count = _editorState.document.root.children.length;
+      final transaction = _editorState.transaction
+        ..insertNode([count], image)
+        ..insertNode([count + 1], paragraph);
+      await _editorState.apply(transaction);
+      return;
+    }
+    final transaction = _editorState.transaction;
+    if (anchor.type == ParagraphBlockKeys.type &&
+        (anchor.delta?.isEmpty ?? false)) {
+      // 光标所在是空段落：图片顶替它，后面补一个新的空段落。
+      transaction
+        ..insertNode(anchor.path, image)
+        ..deleteNode(anchor)
+        ..insertNode(anchor.path.next, paragraph);
+      transaction.afterSelection = Selection.collapsed(
+        Position(path: anchor.path.next),
+      );
+      await _editorState.apply(transaction);
+      return;
+    }
+    // 否则插在当前块后面，光标落到新补的空段落里。
+    transaction
+      ..insertNode(anchor.path.next, image)
+      ..insertNode(anchor.path.next.next, paragraph);
+    transaction.afterSelection = Selection.collapsed(
+      Position(path: anchor.path.next.next),
+    );
+    await _editorState.apply(transaction);
+  }
+
+  /// 1.65：`/` 菜单里的「图片」原本是贴网络图片 URL，这里换成选本地素材。
+  List<CharacterShortcutEvent>? _characterShortcuts(ThemeData theme) {
+    if (widget.onPickImage == null) {
+      return null;
+    }
+    return [
+      ...standardCharacterShortcutEvents.where(
+        (event) => event.key != 'show the slash menu',
+      ),
+      customSlashCommand(
+        _slashMenuItems(),
+        style: theme.brightness == Brightness.dark
+            ? SelectionMenuStyle.dark
+            : SelectionMenuStyle.light,
+      ),
+    ];
+  }
+
+  List<SelectionMenuItem> _slashMenuItems() {
+    final imageLabel = AppFlowyEditorL10n.current.image;
+    return [
+      for (final item in standardSelectionMenuItems)
+        if (item.name != imageLabel)
+          item
+        else
+          SelectionMenuItem(
+            getName: () => item.name,
+            icon: item.icon,
+            keywords: item.keywords,
+            handler: (editorState, menuService, context) {
+              unawaited(_pickAndInsertImage());
+            },
+          ),
+    ];
+  }
+
+  /// 手机工具条上的插图按钮（appflowy 自带的图标集里没有图片图标）。
+  MobileToolbarItem _imageMobileToolbarItem() {
+    return MobileToolbarItem.action(
+      itemIconBuilder: (context, editorState, service) => Icon(
+        Icons.image_outlined,
+        size: 24,
+        color: MobileToolbarTheme.of(context).iconColor,
+      ),
+      actionHandler: (context, editorState) {
+        unawaited(_pickAndInsertImage());
+      },
+    );
+  }
+
+  /// 1.65：图片块悬停时显示「替换 / 删除」，用的是 appflowy 的 menuBuilder。
+  Map<String, BlockComponentBuilder> _blockBuilders() {
+    if (widget.onPickImage == null || widget.readOnly) {
+      return standardBlockComponentBuilderMap;
+    }
+    return {
+      ...standardBlockComponentBuilderMap,
+      ImageBlockKeys.type: ImageBlockComponentBuilder(
+        showMenu: true,
+        menuBuilder: _buildImageMenu,
+      ),
+    };
+  }
+
+  Widget _buildImageMenu(Node node, ImageBlockComponentWidgetState state) {
+    final scheme = Theme.of(context).colorScheme;
+    return Positioned(
+      top: 6,
+      right: 6,
+      child: Material(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(8),
+        elevation: 2,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _imageMenuButton(
+              Icons.swap_horiz,
+              '替换图片',
+              scheme.onSurfaceVariant,
+              () => unawaited(_replaceImage(node)),
+            ),
+            _imageMenuButton(
+              Icons.delete_outline,
+              '删除图片',
+              scheme.onSurfaceVariant,
+              () => unawaited(_deleteImage(node)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _imageMenuButton(
+    IconData icon,
+    String tooltip,
+    Color color,
+    VoidCallback onPressed,
+  ) {
+    return IconButton(
+      icon: Icon(icon, size: 18),
+      color: color,
+      tooltip: tooltip,
+      visualDensity: VisualDensity.compact,
+      onPressed: onPressed,
+    );
+  }
+
+  Future<void> _replaceImage(Node node) async {
+    final pick = widget.onPickImage;
+    if (pick == null || widget.readOnly) {
+      return;
+    }
+    final name = await pick();
+    if (!mounted || name == null || name.isEmpty) {
+      return;
+    }
+    final src = widget.assetPath?.call(name) ?? name;
+    final transaction = _editorState.transaction
+      ..updateNode(node, {ImageBlockKeys.url: src});
+    await _editorState.apply(transaction);
+  }
+
+  Future<void> _deleteImage(Node node) async {
+    if (widget.readOnly) {
+      return;
+    }
+    final transaction = _editorState.transaction..deleteNode(node);
+    await _editorState.apply(transaction);
+    if (!mounted) {
+      return;
+    }
+    if (_editorState.document.root.children.isEmpty) {
+      final restore = _editorState.transaction
+        ..insertNode([0], paragraphNode());
+      await _editorState.apply(restore);
+    }
+  }
+
+  /// 选图 → 导入笔记库（外层页面做）→ 插到光标处。
+  ///
+  /// 选文件会弹系统对话框，回调里编辑器多半已经失去选区，所以先记住，
+  /// 回来发现没有选区就还原。
+  Future<void> _pickAndInsertImage() async {
+    final pick = widget.onPickImage;
+    if (pick == null || widget.readOnly) {
+      return;
+    }
+    final savedSelection = _editorState.selection;
+    final name = await pick();
+    if (!mounted || name == null || name.isEmpty) {
+      return;
+    }
+    if (_editorState.selection == null && savedSelection != null) {
+      _editorState.selection = savedSelection;
+    }
+    await insertImage(name);
+  }
+
   @override
   void dispose() {
     _debounce?.cancel();
     _sub?.cancel();
+    widget.controller?._detach(this);
     super.dispose();
   }
 
@@ -122,6 +373,8 @@ class PEditorState extends State<PEditor> {
       editorStyle: style,
       editable: !widget.readOnly,
       autoFocus: widget.autoFocus,
+      characterShortcutEvents: _characterShortcuts(theme),
+      blockComponentBuilders: _blockBuilders(),
     );
     final surface = ColoredBox(
       color: theme.scaffoldBackgroundColor,
@@ -168,6 +421,7 @@ class PEditorState extends State<PEditor> {
       dividerMobileToolbarItem,
       codeMobileToolbarItem,
       linkMobileToolbarItem,
+      if (widget.onPickImage != null) _imageMobileToolbarItem(),
     ];
   }
 

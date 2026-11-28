@@ -54,4 +54,56 @@ void main() {
       expect(peMarkdownFromDocument(doc).trim(), isEmpty);
     });
   });
+
+  group('PEditor 图片（1.65，不做数据迁移）', () {
+    test('独立成行的 ![[素材名]] 往返不丢', () {
+      const source = '上面\n\n![[照片.png]]\n\n下面';
+      final doc = peDocumentFromMarkdown(source);
+      final image = doc.root.children.where(
+        (node) => node.type == 'image',
+      );
+      expect(image, isNotEmpty);
+      final out = peMarkdownFromDocument(doc);
+      expect(out, contains('![[照片.png]]'));
+      expect(out, contains('上面'));
+      expect(out, contains('下面'));
+    });
+
+    test('素材名换成绝对路径后仍导出 ![[素材名]]', () {
+      const source = '![[照片 01.png]]';
+      final doc = peDocumentFromMarkdown(
+        source,
+        resolveImage: (name) => 'D:/笔记库/2026/01/x.assets/$name',
+      );
+      final node = doc.root.children.firstWhere((n) => n.type == 'image');
+      expect(node.attributes['url'], contains('照片 01.png'));
+      expect(node.attributes['url'], startsWith('D:/'));
+      final out = peMarkdownFromDocument(doc);
+      expect(out.trim(), '![[照片 01.png]]');
+    });
+
+    test('找不到素材时保留名字，不吞行', () {
+      const source = '![[不存在.png]]';
+      final doc = peDocumentFromMarkdown(source, resolveImage: (name) => null);
+      final out = peMarkdownFromDocument(doc);
+      expect(out, contains('![[不存在.png]]'));
+    });
+
+    test('网络图片保持原样', () {
+      const source = '![](https://example.com/a.png)';
+      final doc = peDocumentFromMarkdown(source);
+      final out = peMarkdownFromDocument(doc);
+      expect(out, contains('https://example.com/a.png'));
+      expect(out, isNot(contains('![[')));
+    });
+
+    test('正文中间的 ![[素材名]] 留成文字不丢内容', () {
+      const source = '正文 ![[图.png]] 和 [[另一篇]]';
+      final doc = peDocumentFromMarkdown(source);
+      final out = peMarkdownFromDocument(doc);
+      expect(out, contains('正文'));
+      expect(out, contains('![[图.png]]'));
+      expect(out, contains('[[另一篇]]'));
+    });
+  });
 }
