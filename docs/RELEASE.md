@@ -23,7 +23,7 @@ version: 1.64.2+16402   # 语义版本 + 构建号（Android 靠 +N 判断升级
 ```bash
 flutter pub get
 flutter analyze          # 必须 No issues found
-flutter test             # 必须全部通过（当前 432 条）
+flutter test             # 必须全部通过（当前 441 条）
 ```
 
 同时确认：
