@@ -1,6 +1,12 @@
 # 变更记录
 
-版本号规则：功能版本 + 小数点补丁（如 1.46.1 = 修 1.46 的缺陷）。当前 1.64.1。
+版本号规则：功能版本 + 小数点补丁（如 1.46.1 = 修 1.46 的缺陷）。当前 1.64.2。
+
+## 1.64.2 — PEditor 三主题配色统一（2026-11-28）
+- EditorStyle 文案色改为 `colorScheme.onSurface`，行内代码底 onSurface@10%，链接取 primary
+- 手机 MobileToolbar 配色取 surfaceContainerHigh / onSurfaceVariant / outlineVariant / primary
+- 编辑区外层包 scaffoldBackgroundColor；浅色 / 深色 / 跟随系统三主题一致
+- 修浅色主题「白底白字」；新增 1 条测试，431 → 432 条
 
 ## 1.64.1 — PEditor 深色与手机工具条（2026-11-28）
 - EditorStyle 显式深色文字（正文/标题白字、代码半透明底），修黑底黑字

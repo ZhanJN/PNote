@@ -26,7 +26,7 @@ void main() {
     expect(find.textContaining('标题', findRichText: true), findsWidgets);
   });
 
-  testWidgets('1.64.1 深色主题下编辑文字是白色', (tester) async {
+  testWidgets('1.64.1 深色主题下编辑文字用 onSurface（不是写死白色）', (tester) async {
     await tester.pumpWidget(
       wrap(
         PEditor(initialText: '正文', onChanged: (_) {}),
@@ -36,8 +36,24 @@ void main() {
     await tester.pumpAndSettle();
     final editor = tester.widget<AppFlowyEditor>(find.byType(AppFlowyEditor));
     final config = editor.editorStyle.textStyleConfiguration;
-    expect(config.text.color, Colors.white);
-    expect(config.bold.color, Colors.white);
+    expect(config.text.color, ThemeData.dark().colorScheme.onSurface);
+    expect(config.bold.color, ThemeData.dark().colorScheme.onSurface);
+  });
+
+  testWidgets('1.64.2 浅色主题下编辑文字是深色 onSurface', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        PEditor(initialText: '正文', onChanged: (_) {}),
+        theme: ThemeData.light(),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final editor = tester.widget<AppFlowyEditor>(find.byType(AppFlowyEditor));
+    final config = editor.editorStyle.textStyleConfiguration;
+    final light = ThemeData.light().colorScheme;
+    expect(config.text.color, light.onSurface);
+    expect(config.text.color, isNot(Colors.white));
+    expect(config.code.backgroundColor!.a, greaterThan(0));
   });
 
   testWidgets('1.64.1 手机宽度下出现 MobileToolbar', (tester) async {

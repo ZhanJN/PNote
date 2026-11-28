@@ -113,35 +113,42 @@ class PEditorState extends State<PEditor> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final mobile = MediaQuery.sizeOf(context).width < 600;
-    final style = _buildStyle(scheme, mobile);
+    final style = _buildStyle(theme, mobile);
     final editor = AppFlowyEditor(
       editorState: _editorState,
       editorStyle: style,
       editable: !widget.readOnly,
       autoFocus: widget.autoFocus,
     );
+    final surface = ColoredBox(
+      color: theme.scaffoldBackgroundColor,
+      child: editor,
+    );
 
     if (!mobile) {
-      return editor;
+      return surface;
     }
     return Column(
       children: [
-        Expanded(child: editor),
+        Expanded(child: surface),
         if (!widget.readOnly)
           MobileToolbar(
             editorState: _editorState,
             toolbarItems: _mobileToolbarItems(),
-            backgroundColor: const Color(0xFF1C1B1F),
-            foregroundColor: Colors.white70,
-            itemOutlineColor: const Color(0x33FFFFFF),
+            backgroundColor: scheme.surfaceContainerHigh,
+            foregroundColor: scheme.onSurfaceVariant,
+            itemOutlineColor: scheme.outlineVariant,
             itemHighlightColor: scheme.primary,
             primaryColor: scheme.primary,
-            onPrimaryColor: Colors.black,
-            tabbarSelectedBackgroundColor: const Color(0x33FFFFFF),
-            tabbarSelectedForegroundColor: Colors.white,
-            outlineColor: const Color(0x33FFFFFF),
+            onPrimaryColor: scheme.onPrimary,
+            tabbarSelectedBackgroundColor: scheme.primary.withValues(
+              alpha: 0.12,
+            ),
+            tabbarSelectedForegroundColor: scheme.onSurface,
+            outlineColor: scheme.outlineVariant,
           ),
       ],
     );
@@ -161,39 +168,33 @@ class PEditorState extends State<PEditor> {
     ];
   }
 
-  EditorStyle _buildStyle(ColorScheme scheme, bool mobile) {
+  EditorStyle _buildStyle(ThemeData theme, bool mobile) {
+    final scheme = theme.colorScheme;
+    final on = scheme.onSurface;
     final config = TextStyleConfiguration(
-      text: const TextStyle(
+      text: TextStyle(
         fontSize: 15,
         height: 1.6,
-        color: Colors.white,
+        color: on,
         fontFamily: 'NotoSansSC',
       ),
-      bold: const TextStyle(
-        fontWeight: FontWeight.w700,
-        color: Colors.white,
-      ),
-      italic: const TextStyle(
-        fontStyle: FontStyle.italic,
-        color: Colors.white,
-      ),
-      underline: const TextStyle(
-        decoration: TextDecoration.underline,
-        color: Colors.white,
-      ),
-      strikethrough: const TextStyle(
+      bold: TextStyle(fontWeight: FontWeight.w700, color: on),
+      italic: TextStyle(fontStyle: FontStyle.italic, color: on),
+      underline: TextStyle(decoration: TextDecoration.underline, color: on),
+      strikethrough: TextStyle(
         decoration: TextDecoration.lineThrough,
-        color: Colors.white,
+        color: on,
       ),
       href: TextStyle(
         color: scheme.primary,
         decoration: TextDecoration.underline,
       ),
-      code: const TextStyle(
+      code: TextStyle(
         fontFamily: 'Consolas',
-        color: Colors.white,
-        backgroundColor: Color(0x33FFFFFF),
+        color: on,
+        backgroundColor: on.withValues(alpha: 0.10),
       ),
+      autoComplete: TextStyle(color: scheme.onSurfaceVariant),
       lineHeight: 1.6,
     );
     if (mobile) {

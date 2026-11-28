@@ -3,7 +3,7 @@
 [![CI](https://github.com/ZhanJN/PNote/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhanJN/PNote/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/ZhanJN/PNote)](https://github.com/ZhanJN/PNote/releases/latest)
 
-> 1.64.1（2026-11-28，PEditor 深色与手机工具条）· 最新 Release 仍是 [v1.62.1](https://github.com/ZhanJN/PNote/releases/tag/v1.62.1)
+> 1.64.2（2026-11-28，PEditor 三主题配色统一）· 最新 Release 仍是 [v1.62.1](https://github.com/ZhanJN/PNote/releases/tag/v1.62.1)
 
 一个纯局域网、无账号、无云端的极简待办 + 笔记应用。Flutter 编写，Windows 与 Android 共用一套代码，数据以「Markdown 文件 + SQLite」形式存在本地，两台设备连同一个 Wi-Fi 就能互相同步。
 
