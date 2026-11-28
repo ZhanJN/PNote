@@ -12,6 +12,7 @@ void main() {
     return MaterialApp(
       home: Scaffold(
         body: BlockEditor(
+          key: ValueKey(text),
           initialText: text,
           onChanged: (value) => last = value,
           assetPath: (_) => null,
@@ -515,6 +516,41 @@ void main() {
     expect(clip, isNotNull);
     expect(clip, contains('甲'));
     expect(clip, contains('乙'));
+  });
+  testWidgets('1.63 粘贴带空行的多行文本会拆成多个块且空行保留', (tester) async {
+    last = '';
+    await tester.pumpWidget(wrap(''));
+    await tester.pump();
+
+    await tester.enterText(find.byType(TextField).first, '一\n\n二');
+    await tester.pump();
+
+    expect(last, '一\n\n二');
+    expect(find.byType(TextField), findsNWidgets(3));
+  });
+
+  testWidgets('1.63 空行不打断有序列表编号', (tester) async {
+    await tester.pumpWidget(wrap('1. 一\n\n2. 二'));
+    await tester.pump();
+
+    expect(find.text('1.'), findsOneWidget);
+    expect(find.text('2.'), findsOneWidget);
+  });
+
+  testWidgets('1.63 双击选中的词点高亮只包住这个词', (tester) async {
+    last = '';
+    await tester.pumpWidget(wrap('重点内容'));
+    await tester.pump();
+
+    final field = tester.widget<TextField>(find.byType(TextField).first);
+    field.controller!.selection =
+        const TextSelection(baseOffset: 0, extentOffset: 1);
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('高亮'));
+    await tester.pump();
+
+    expect(last, '==重==点内容');
   });
 }
 

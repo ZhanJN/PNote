@@ -354,9 +354,10 @@ class MdBlock {
     for (var i = 0; i < blocks.length; i++) {
       final block = blocks[i];
       // 1.60：有序列表按连续段落的序号写回，不再全部写成 1.。
+      // 1.63：空行不打断编号（否则空一行后「3.」会变成「1.」）。
       if (block.kind == MdBlockKind.numbered) {
         number += 1;
-      } else {
+      } else if (block.kind != MdBlockKind.blank) {
         number = 0;
       }
       if (i > 0) buffer.write('\n');

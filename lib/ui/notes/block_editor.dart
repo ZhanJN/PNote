@@ -54,6 +54,10 @@ class _BlockEntry {
   final GlobalKey key = GlobalKey();
   String lastText;
 
+  /// 1.63：工具条抢焦点会把 TextField 的选区清掉。
+  /// 记住最后一次「非折叠」选区，点格式按钮时优先用它。
+  TextSelection? savedSelection;
+
   void dispose() {
     controller.dispose();
     focus.dispose();
@@ -88,14 +92,9 @@ class BlockEditorState extends State<BlockEditor> {
   @override
   void didUpdateWidget(covariant BlockEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.initialText != widget.initialText &&
-        _encode() != widget.initialText) {
-      for (final entry in _entries) {
-        entry.dispose();
-      }
-      _buildEntries(widget.initialText);
-      _serial++;
-    }
+    // 1.63：不按 initialText 的差异重建——父层回写的 controller 可能比
+    // 这里的 _encode() 慢一拍，按差异重建会把刚输入的一行“吞掉”。
+    // 需要外部重建时，父层会换 key（_blocksSerial）。
   }
 
   @override
@@ -147,9 +146,26 @@ class BlockEditorState extends State<BlockEditor> {
     widget.onChanged(_encode());
   }
 
-  void _onBlockTextChanged(int index, String value) {
-    final entry = _entries[index];
-    // 回车拆块：只在「比上一次多出一个换行」时拆，粘贴整段不会被误拆。
+  /// 1.63：外部（AppBar 切源码/预览/保存前）调用，把还没回写的输入提交出来。
+  /// 返回最新的 Markdown，保证切模式时不会丢最后一行。
+  String flush() {
+    var changed = false;
+    for (final entry in _entries) {
+      final text = entry.controller.text;
+      if (text != entry.block.text) {
+        entry.block.text = text;
+        entry.lastText = text;
+        changed = true;
+      }
+    }
+    if (changed) _notify();
+    return _encode();
+  }
+
+  void _onBlockTextChanged(_BlockEntry entry, String value) {
+    final index = _entries.indexOf(entry);
+    if (index < 0) return; // 块已在重组中被移除，旧回调直接忽略
+    // 回车拆块：只在「比上一次恰好多一个换行」时拆。
     if (value.length == entry.lastText.length + 1) {
       final at = _insertedNewlineIndex(entry.lastText, value);
       if (at >= 0) {
@@ -157,9 +173,47 @@ class BlockEditorState extends State<BlockEditor> {
         return;
       }
     }
+    // 1.63：粘贴多行（含空行）时一次拆成多个块，不能把整段塞进一个块里，
+    // 否则切模式/保存后空行会丢、行会“占位但没内容”。
+    if (value.contains('\n') && value != entry.lastText) {
+      _applyMultiline(index, value);
+      return;
+    }
     entry.block.text = value;
     entry.lastText = value;
     _notify();
+  }
+
+  /// 把一段含换行的文本拆成多个块；空行保留为 blank 块。
+  void _applyMultiline(int index, String value) {
+    final parts = value.split('\n');
+    final entry = _entries[index];
+    final first = parts.first;
+    final created = <_BlockEntry>[];
+    entry.block.text = first;
+    entry.lastText = first;
+    entry.controller.value = TextEditingValue(
+      text: first,
+      selection: TextSelection.collapsed(offset: first.length),
+    );
+    for (var i = 1; i < parts.length; i++) {
+      final segment = parts[i];
+      final block = segment.isEmpty
+          ? MdBlock(MdBlockKind.blank, '')
+          : MdBlock(MdBlockKind.paragraph, segment);
+      created.add(_BlockEntry(block));
+    }
+    setState(() {
+      _entries.insertAll(index + 1, created);
+    });
+    _notify();
+    final last = created.isEmpty ? entry : created.last;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      last.focus.requestFocus();
+      last.controller.selection =
+          TextSelection.collapsed(offset: last.controller.text.length);
+    });
   }
 
   int _insertedNewlineIndex(String oldValue, String newValue) {
@@ -283,7 +337,7 @@ class BlockEditorState extends State<BlockEditor> {
     final index = _lastFocused.clamp(0, _entries.length - 1);
     final entry = _entries[index];
     final value = entry.controller.value;
-    final selection = value.selection;
+    final selection = _effectiveSelection(entry);
     final text = value.text;
     final start = selection.isValid ? selection.start : text.length;
     final end = selection.isValid ? selection.end : text.length;
@@ -301,8 +355,31 @@ class BlockEditorState extends State<BlockEditor> {
     );
     entry.block.text = replaced;
     entry.lastText = replaced;
+    entry.savedSelection = null;
     entry.focus.requestFocus();
     _notify();
+  }
+
+  /// 1.63：工具条抢焦点时，TextField 的选区会变成无效/折叠。
+  /// 优先用当前有效选区，其次用最后一次记住的非折叠选区。
+  TextSelection _effectiveSelection(_BlockEntry entry) {
+    final current = entry.controller.selection;
+    if (current.isValid && !current.isCollapsed) return current;
+    final saved = entry.savedSelection;
+    final length = entry.controller.text.length;
+    if (saved != null && saved.isValid && !saved.isCollapsed && saved.end <= length) {
+      return saved;
+    }
+    return current;
+  }
+
+  void _rememberSelections() {
+    for (final entry in _entries) {
+      final selection = entry.controller.selection;
+      if (selection.isValid && !selection.isCollapsed) {
+        entry.savedSelection = selection;
+      }
+    }
   }
 
   /// 工具条开关：已经是这个格式就取消，否则加上；不会叠第二层标记。
@@ -311,7 +388,7 @@ class BlockEditorState extends State<BlockEditor> {
     final entry = _entries[index];
     final value = entry.controller.value;
     final text = value.text;
-    final selection = value.selection;
+    final selection = _effectiveSelection(entry);
     final start = selection.isValid ? selection.start : text.length;
     final end = selection.isValid ? selection.end : text.length;
 
@@ -335,6 +412,7 @@ class BlockEditorState extends State<BlockEditor> {
           );
           entry.block.text = next;
           entry.lastText = next;
+          entry.savedSelection = null;
           entry.focus.requestFocus();
           _notify();
           return;
@@ -372,6 +450,7 @@ class BlockEditorState extends State<BlockEditor> {
     );
     entry.block.text = next;
     entry.lastText = next;
+    entry.savedSelection = null;
     entry.focus.requestFocus();
     _notify();
   }
@@ -638,12 +717,13 @@ class BlockEditorState extends State<BlockEditor> {
   }
 
   void _onPointerDown(PointerDownEvent event) {
+    _rememberSelections();
     final row = _rowAt(event.position, edge: false);
     if (_blockSelecting) {
-      _pointerAt = event.position;
-      // 选择状态下的点击：从锚点把选区扩展到这一行。
-      // 想重新从别处开始，先按 Esc 退出再长按。
+      // 1.63：点选择条/工具条时 row == null，绝不能把 _pointerAt 挪到那里，
+      // 否则贴边滚动会把选区收缩成“按钮下面那一块”。
       if (row != null) {
+        _pointerAt = event.position;
         setState(() {
           _selAnchor ??= row;
           _selFocus = row;
@@ -727,8 +807,22 @@ class BlockEditorState extends State<BlockEditor> {
         _ => TextAlign.left,
       };
 
+  /// 指针是否在列表（含上下 48 px 缓冲）范围内。用于避免点选择条时误扩展选区。
+  bool _withinList(Offset global, {double pad = 48}) {
+    final box = _listBoxKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return false;
+    final top = box.localToGlobal(Offset.zero).dy;
+    final bottom = top + box.size.height;
+    return global.dy >= top - pad && global.dy <= bottom + pad;
+  }
+
   void _onPointerMove(PointerMoveEvent event) {
     if (_blockSelecting) {
+      // 指针跑到选择条/工具条上时不参与选区扩展，也不贴边滚动。
+      if (!_withinList(event.position)) {
+        _stopEdgeScroll();
+        return;
+      }
       _pointerAt = event.position;
       if (_edgeTimer == null) _startEdgeScroll();
       final row = _rowAt(event.position);
@@ -981,7 +1075,7 @@ class BlockEditorState extends State<BlockEditor> {
                 onTap: () => _lastFocused = index,
                 onChanged: (value) {
                   _lastFocused = index;
-                  _onBlockTextChanged(index, value);
+                  _onBlockTextChanged(entry, value);
                 },
               ),
             ),
@@ -992,10 +1086,13 @@ class BlockEditorState extends State<BlockEditor> {
   }
 
   /// 1.60：连续的有序列表按 1、2、3… 显示，不再全部写成 1.。
+  /// 1.63：空行不断列表——否则空一行后「3.」会变回「1.」。
   int _ordinal(int index) {
     var number = 1;
     for (var i = index - 1; i >= 0; i--) {
-      if (_entries[i].block.kind != MdBlockKind.numbered) break;
+      final kind = _entries[i].block.kind;
+      if (kind == MdBlockKind.blank) continue;
+      if (kind != MdBlockKind.numbered) break;
       number++;
     }
     return number;

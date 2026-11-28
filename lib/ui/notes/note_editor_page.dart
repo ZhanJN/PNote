@@ -149,6 +149,10 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   }
 
   Future<void> _save() async {
+    // 1.63：保存/切模式前先把块编辑器里还没回写的输入提交，避免吞行。
+    if (!_source && !_preview) {
+      _blockKey.currentState?.flush();
+    }
     if (!_dirty || _saving) return;
     final text = _controller.text;
     setState(() => _saving = true);
@@ -261,6 +265,10 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
 
   /// 1.60：源码模式——直接编辑整篇 Markdown，给需要精确控制格式的时候用。
   void _toggleSource() {
+    if (!_source) {
+      // 切走前把块编辑器的最后输入提交给 controller，不然会少一行。
+      _blockKey.currentState?.flush();
+    }
     setState(() {
       _source = !_source;
       if (_source) _preview = false;
@@ -288,6 +296,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
       return;
     }
     try {
+      if (!_source) _blockKey.currentState?.flush();
       _refreshDoc();
     } catch (_) {
       // 解析/渲染出错：不进预览，留在编辑模式。

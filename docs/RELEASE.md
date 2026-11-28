@@ -6,14 +6,14 @@
 
 ## 一、版本号规则
 
-- 功能版本：`1.62.1`（新增账号名）→ 小版本号 +1
+- 功能版本：`1.63`（新增账号名）→ 小版本号 +1
 - 缺陷修复：`1.62.2`（修 1.51 的 bug，行为不变）
 - 协议版本独立演进：`pnote-sync/8`。**协议主版本变化时两端必须一起升级**，Release 说明里要写清楚
 
 `pubspec.yaml` 的 `version` 同时决定 Windows 文件版本与 Android `versionName`/`versionCode`：
 
 ```yaml
-version: 1.62.1+16201   # 语义版本 + 构建号（Android 靠 +N 判断升级）
+version: 1.63.0+16300   # 语义版本 + 构建号（Android 靠 +N 判断升级）
 ```
 
 每次发版 `+N` 必须比上一个安装包大，否则 Android 不允许覆盖安装。
@@ -23,7 +23,7 @@ version: 1.62.1+16201   # 语义版本 + 构建号（Android 靠 +N 判断升级
 ```bash
 flutter pub get
 flutter analyze          # 必须 No issues found
-flutter test             # 必须全部通过（当前 409 条）
+flutter test             # 必须全部通过（当前 413 条）
 ```
 
 同时确认：
@@ -73,7 +73,7 @@ Get-FileHash PNote-<版本>-android-arm64-v8a.apk -Algorithm SHA256
 发布目录按版本号命名，不再用 V1/V2/V3：
 
 ```
-D:\PNote_<版本>\           例如 D:\PNote_1.62.1\，用户直接运行这里的 pc\pnote.exe
+D:\PNote_<版本>\           例如 D:\PNote_1.63\，用户直接运行这里的 pc\pnote.exe
   pc\                      Windows Release 全量文件
   android\PNote.apk         手机安装包
   使用说明.txt  版本说明.txt
@@ -93,12 +93,12 @@ git tag -a v<版本> -m "PNote <版本> - <一句话主题>"
 git push origin v<版本>
 ```
 
-标签名统一 `v` + 语义版本（`v1.62.1`），Release 会自动关联到它对应的提交。
+标签名统一 `v` + 语义版本（`v1.63`），Release 会自动关联到它对应的提交。
 
 ## 六、创建 Release（网页操作）
 
 1. 打开 <https://github.com/ZhanJN/PNote/releases/new>
-2. **Choose a tag** 选刚推上去的 `v1.62.1`（若没有就手填，GitHub 会在发布时创建）
+2. **Choose a tag** 选刚推上去的 `v1.63`（若没有就手填，GitHub 会在发布时创建）
 3. **Release title**：`PNote 1.62.1 — 编辑器与预览修正`
 4. **Describe this release**：写三段即可
    - 这一版多了什么（用户视角）

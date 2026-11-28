@@ -117,4 +117,9 @@ void main() {
     expect(marked, contains('\u2065靠右'));
     expect(marked, isNot(contains(':::')));
   });
+
+  test('1.63 空行不打断有序列表编号', () {
+    final blocks = MdBlock.parseBlocks('1. 甲\n\n1. 乙\n\n1. 丙');
+    expect(MdBlock.encodeBlocks(blocks), '1. 甲\n\n2. 乙\n\n3. 丙');
+  });
 }

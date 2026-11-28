@@ -50,6 +50,8 @@ app.*.map.json
 # 一次性文档编辑脚本与旧备份
 /docs/_edit_*.py
 /docs/*.bak*
+# 内部规划稿（2.0 编辑器选型与路线，不对外）
+/docs/design/
 # Windows 构建生成的中间目录（体积很大，Flutter 会自己重建）
 /windows/flutter/ephemeral/
 # 本地笔记库（若在项目根目录启动过 App）
