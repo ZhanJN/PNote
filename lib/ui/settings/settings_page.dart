@@ -9,6 +9,7 @@ import 'dart:io';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:material_ui/material_ui.dart';
 
+import 'package:pnote/app_version.dart';
 import 'package:pnote/data/task_dao.dart';
 import 'package:pnote/notes/notes_paths.dart';
 import 'package:pnote/sync/account.dart';
@@ -164,7 +165,7 @@ class SettingsPage extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.info_outline),
             title: const Text('PNote'),
-            subtitle: const Text('纯局域网同步的待办与笔记 · v1.64.2 (16402)'),
+            subtitle: Text('纯局域网同步的待办与笔记 · $kAppVersionLabel'),
           ),
           ListTile(
             leading: const Icon(Icons.devices_outlined),
