@@ -152,6 +152,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "0.7.15"
+  desktop_drop:
+    dependency: "direct main"
+    description:
+      name: desktop_drop
+      sha256: "47ded09c85909edfed644fd4cbb5051b040d0aed5c79e7e062ea4b3b7156dbe4"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "0.8.4"
   device_info_plus:
     dependency: transitive
     description:
@@ -555,6 +563,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "9.6.4"
+  pasteboard:
+    dependency: "direct main"
+    description:
+      name: pasteboard
+      sha256: "7b1c7ed83b4ff27acced26e96b87c16ac37fb6c57d7886eb3130faccb28b2cc2"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "0.6.2"
   path:
     dependency: "direct main"
     description:

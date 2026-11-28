@@ -1,7 +1,7 @@
 name: pnote
 description: "PNote - 纯局域网 P2P 同步的极简待办与笔记"
 publish_to: 'none'
-version: 1.65.0+16500
+version: 1.65.1+16501
 
 environment:
   sdk: ^3.14.0
@@ -23,6 +23,8 @@ dependencies:
   timezone: ^0.11.2
   markdown: ^7.3.1
   appflowy_editor: ^6.2.0
+  desktop_drop: ^0.8.4
+  pasteboard: ^0.6.2
 
 # 固定 path_provider_android 到 2.2.x：2.3.0 起改为依赖 jni_flutter，
 # 会在 pub 缓存目录里跑 CMake 编译原生库，本机（Windows + 中文路径）上必然失败。

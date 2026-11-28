@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -328,6 +329,96 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     await tester.tap(_menuButton('删除图片'));
     await tester.pump(const Duration(milliseconds: 100));
+    expect(
+      state.editorState.document.root.children.any(
+        (node) => node.type == 'image',
+      ),
+      isFalse,
+    );
+  });
+
+  testWidgets('1.65 Ctrl+V 把剪贴板里的图片插进来，写回 ![[名]]', (tester) async {
+    final dir = Directory.systemTemp.createTempSync('pe_paste');
+    addTearDown(() {
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+    late Uint8List png;
+    await tester.runAsync(() async {
+      png = await _makePng(120, 80);
+    });
+    final target = File('${dir.path}/粘贴图片.png')..writeAsBytesSync(png);
+    await tester.runAsync(() async {
+      await _preload(target);
+    });
+
+    var markdown = '';
+    var saved = 0;
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '第一段',
+          onChanged: (text) => markdown = text,
+          onPasteImage: () async => png,
+          onImportImageBytes: (bytes, fileName) async {
+            saved++;
+            expect(bytes, isNotEmpty);
+            return '粘贴图片.png';
+          },
+          assetPath: (name) => name == '粘贴图片.png' ? target.path : null,
+        ),
+      ),
+    );
+    await tester.pump();
+    // 快捷键要落在编辑器里的焦点上才会被编辑器自己的命令处理收到。
+    await tester.tap(find.byType(AppFlowyRichText).first);
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(saved, 1);
+    final state = tester.state<PEditorState>(find.byType(PEditor));
+    expect(
+      state.editorState.document.root.children.any(
+        (node) => node.type == 'image',
+      ),
+      isTrue,
+    );
+    expect(markdown, contains('![[粘贴图片.png]]'));
+  });
+
+  testWidgets('1.65 剪贴板里没有图片时 Ctrl+V 不插图、不崩', (tester) async {
+    var reads = 0;
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '第一段',
+          onChanged: (_) {},
+          onPasteImage: () async {
+            reads++;
+            return null;
+          },
+          onImportImageBytes: (bytes, fileName) async => '不该走到这里.png',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byType(AppFlowyRichText).first);
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(reads, 1);
+    final state = tester.state<PEditorState>(find.byType(PEditor));
     expect(
       state.editorState.document.root.children.any(
         (node) => node.type == 'image',

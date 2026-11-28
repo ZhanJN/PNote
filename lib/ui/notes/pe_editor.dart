@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:appflowy_editor/appflowy_editor.dart';
+import 'package:desktop_drop/desktop_drop.dart';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../notes/pe_markdown.dart';
@@ -47,6 +49,9 @@ class PEditor extends StatefulWidget {
     this.controller,
     this.onPickImage,
     this.assetPath,
+    this.onPasteImage,
+    this.onImportImageBytes,
+    this.onDropImage,
   });
 
   final String initialText;
@@ -62,6 +67,16 @@ class PEditor extends StatefulWidget {
 
   /// 素材名 → 磁盘绝对路径，渲染 `![[素材名]]` 时用。
   final String? Function(String name)? assetPath;
+
+  /// 1.65：读系统剪贴板里的图片（png 字节）；没有图片返回 null。
+  final Future<Uint8List?> Function()? onPasteImage;
+
+  /// 1.65：把图片字节存进笔记库，返回素材名。
+  final Future<String?> Function(Uint8List bytes, String? fileName)?
+  onImportImageBytes;
+
+  /// 1.65：把拖进窗口的文件存进笔记库，返回素材名。
+  final Future<String?> Function(String path)? onDropImage;
 
   @override
   State<PEditor> createState() => PEditorState();
@@ -354,6 +369,109 @@ class PEditorState extends State<PEditor> {
     await insertImage(name);
   }
 
+  /// 1.65：Ctrl/Cmd+V —— 剪贴板里是图片就存进笔记库再插图，否则退回上游的文本粘贴。
+  ///
+  /// 不能靠外层 Shortcuts：上游把 `ctrl+v` 写进了 [standardCommandShortcutEvents]，
+  /// 编辑器内的按键处理会先把它消费掉，外层永远收不到。
+  CommandShortcutEvent _pasteWithImageCommand() {
+    return CommandShortcutEvent(
+      key: 'pnote paste the content with image',
+      getDescription: () => AppFlowyEditorL10n.current.cmdPasteContent,
+      command: 'ctrl+v',
+      macOSCommand: 'cmd+v',
+      handler: (editorState) {
+        final read = widget.onPasteImage;
+        final save = widget.onImportImageBytes;
+        if (read == null || save == null) {
+          return pasteCommand.handler(editorState);
+        }
+        unawaited(_pasteImage(editorState, read, save));
+        return KeyEventResult.handled;
+      },
+    );
+  }
+
+  List<CommandShortcutEvent>? _commandShortcuts() {
+    if (widget.onPasteImage == null ||
+        widget.onImportImageBytes == null ||
+        widget.readOnly) {
+      return null;
+    }
+    return [
+      for (final event in standardCommandShortcutEvents)
+        if (event == pasteCommand) _pasteWithImageCommand() else event,
+    ];
+  }
+
+  Future<void> _pasteImage(
+    EditorState editorState,
+    Future<Uint8List?> Function() read,
+    Future<String?> Function(Uint8List bytes, String? fileName) save,
+  ) async {
+    Uint8List? bytes;
+    try {
+      bytes = await read();
+    } catch (_) {
+      bytes = null;
+    }
+    if (bytes == null || bytes.isEmpty) {
+      pasteCommand.handler(editorState);
+      return;
+    }
+    final savedSelection = editorState.selection;
+    final name = await save(bytes, '粘贴图片.png');
+    if (!mounted) {
+      return;
+    }
+    if (name == null || name.isEmpty) {
+      pasteCommand.handler(editorState);
+      return;
+    }
+    if (editorState.selection == null && savedSelection != null) {
+      editorState.selection = savedSelection;
+    }
+    await insertImage(name);
+  }
+
+  /// 1.65：从资源管理器拖进来的文件 → 存进笔记库 → 插到光标处。
+  Future<void> _dropImage(String path) async {
+    final drop = widget.onDropImage;
+    if (drop == null || widget.readOnly) {
+      return;
+    }
+    final savedSelection = _editorState.selection;
+    final name = await drop(path);
+    if (!mounted || name == null || name.isEmpty) {
+      return;
+    }
+    if (_editorState.selection == null && savedSelection != null) {
+      _editorState.selection = savedSelection;
+    }
+    await insertImage(name);
+    if (mounted) {
+      widget.onChanged(flush());
+    }
+  }
+
+  /// 把拖拽接在编辑区外面（粘贴走 [AppFlowyEditor.commandShortcutEvents]）。
+  Widget _withImageDrop(Widget child) {
+    if (widget.onDropImage == null || widget.readOnly) {
+      return child;
+    }
+    return DropTarget(
+      onDragDone: (details) {
+        if (details.files.isEmpty) {
+          return;
+        }
+        final path = details.files.first.path;
+        if (path.isNotEmpty) {
+          unawaited(_dropImage(path));
+        }
+      },
+      child: child,
+    );
+  }
+
   @override
   void dispose() {
     _debounce?.cancel();
@@ -374,13 +492,16 @@ class PEditorState extends State<PEditor> {
       editable: !widget.readOnly,
       autoFocus: widget.autoFocus,
       characterShortcutEvents: _characterShortcuts(theme),
+      commandShortcutEvents: _commandShortcuts(),
       blockComponentBuilders: _blockBuilders(),
     );
-    final surface = ColoredBox(
-      color: theme.scaffoldBackgroundColor,
-      child: DefaultTextStyle.merge(
-        style: TextStyle(color: scheme.onSurface, fontFamily: 'NotoSansSC'),
-        child: editor,
+    final surface = _withImageDrop(
+      ColoredBox(
+        color: theme.scaffoldBackgroundColor,
+        child: DefaultTextStyle.merge(
+          style: TextStyle(color: scheme.onSurface, fontFamily: 'NotoSansSC'),
+          child: editor,
+        ),
       ),
     );
 

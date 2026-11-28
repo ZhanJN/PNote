@@ -8,10 +8,12 @@ library;
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:material_ui/material_ui.dart';
+import 'package:pasteboard/pasteboard.dart';
 
 import 'package:pnote/notes/notes_ast.dart';
 import 'package:pnote/notes/notes_links.dart';
@@ -341,6 +343,46 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     if (picked == null) return null;
     try {
       final name = await widget.store.importAsset(_note, File(picked.path));
+      final assets = await widget.store.assetsOf(_noteId);
+      if (mounted) setState(() => _assets = assets);
+      return name;
+    } on NotesIoException catch (e) {
+      _showMessage(e.message);
+      return null;
+    }
+  }
+
+  /// 1.65：剪贴板里的图片字节 → 存进 `<笔记>.assets/`，返回素材名。
+  Future<String?> _importAssetBytes(Uint8List bytes, String? fileName) async {
+    try {
+      final name = await widget.store.importAssetBytes(
+        _note,
+        bytes,
+        fileName == null || fileName.isEmpty ? '粘贴图片.png' : fileName,
+      );
+      final assets = await widget.store.assetsOf(_noteId);
+      if (mounted) setState(() => _assets = assets);
+      return name;
+    } on NotesIoException catch (e) {
+      _showMessage(e.message);
+      return null;
+    }
+  }
+
+  /// 1.65：拖进窗口的文件 → 存进 `<笔记>.assets/`，返回素材名。
+  Future<String?> _importAssetFromPath(String path) async {
+    final file = File(path);
+    if (!await file.exists()) {
+      return null;
+    }
+    final ext = path.toLowerCase();
+    const imageExts = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'];
+    if (!imageExts.any(ext.endsWith)) {
+      _showMessage('只能拖图片进来（png / jpg / gif / webp / bmp）');
+      return null;
+    }
+    try {
+      final name = await widget.store.importAsset(_note, file);
       final assets = await widget.store.assetsOf(_noteId);
       if (mounted) setState(() => _assets = assets);
       return name;
@@ -737,6 +779,9 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
         controller: _peController,
         onPickImage: _importAssetName,
         assetPath: (name) => _assets[name]?.path,
+        onPasteImage: () => Pasteboard.image,
+        onImportImageBytes: _importAssetBytes,
+        onDropImage: _importAssetFromPath,
       );
     }
     // 1.57：块状编辑器。每个段落是一个块，标题/列表/待办/图片直接在原位排版。

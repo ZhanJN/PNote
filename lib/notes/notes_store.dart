@@ -9,6 +9,7 @@ library;
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
@@ -417,6 +418,24 @@ class NotesStore {
       await source.copy(p.join(dir.path, name));
     } on FileSystemException catch (e) {
       throw NotesIoException('复制素材失败：${e.osError?.message ?? e.message}');
+    }
+    return name;
+  }
+
+  /// 把内存里的图片字节写进 `<笔记>.assets/`，返回放进库里的文件名。
+  ///
+  /// 1.65 起用于「剪贴板粘贴图片」「拖图片进窗口」——这两条路径没有源文件，只有字节。
+  Future<String> importAssetBytes(
+    NoteFile note,
+    Uint8List bytes,
+    String fileName,
+  ) async {
+    final dir = await noteAssetsFor(note.id);
+    final name = _uniqueAssetName(dir, fileName);
+    try {
+      await File(p.join(dir.path, name)).writeAsBytes(bytes, flush: true);
+    } on FileSystemException catch (e) {
+      throw NotesIoException('保存素材失败：${e.osError?.message ?? e.message}');
     }
     return name;
   }
