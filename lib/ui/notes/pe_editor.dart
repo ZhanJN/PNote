@@ -9,6 +9,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../notes/pe_code_block.dart';
 import '../../notes/pe_markdown.dart';
 import 'pnote_code_block.dart';
+import 'pnote_table_bar.dart';
 
 /// 外层页面持有的 PEditor 句柄：插入图片、回写 Markdown。
 ///
@@ -728,6 +729,13 @@ class PEditorState extends State<PEditor> {
       builders[ImageBlockKeys.type] = ImageBlockComponentBuilder(
         showMenu: true,
         menuBuilder: _buildImageMenu,
+      );
+    }
+    // 1.65.6：编辑模式下表格正下方常驻「加行 / 加列 / 删行 / 删列」，
+    // 手机上不用再点单元格→底部工具条→弹窗。
+    if (!widget.readOnly) {
+      builders[TableBlockKeys.type] = PnoteTableBlockComponentBuilder(
+        editorState: _editorState,
       );
     }
     return builders;

@@ -606,4 +606,48 @@ void main() {
     expect(markdown, contains('|-|-|'));
     expect(markdown.split('\n').length, greaterThanOrEqualTo(3));
   });
+
+  testWidgets('1.65.6 编辑模式下表格下方有「加行 / 加列」按钮，点了真的加', (tester) async {
+    final controller = PeEditorController();
+    var markdown = '';
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '| 姓名 | 年龄 |\n| --- | --- |\n| 张三 | 20 |',
+          onChanged: (value) => markdown = value,
+          controller: controller,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('加行'), findsOneWidget);
+    expect(find.text('加列'), findsOneWidget);
+
+    await tester.tap(find.text('加行'));
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.pumpAndSettle();
+
+    // 2 行变 3 行：多出来的一行是空的，但 Markdown 里应多一条管道行。
+    final rows = markdown
+        .split('\n')
+        .where((line) => line.trimLeft().startsWith('|'))
+        .length;
+    expect(rows, greaterThanOrEqualTo(4));
+  });
+
+  testWidgets('1.65.6 只读模式下表格下方不出现操作栏', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '| 姓名 | 年龄 |\n| --- | --- |\n| 张三 | 20 |',
+          onChanged: (_) {},
+          readOnly: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('加行'), findsNothing);
+  });
 }
