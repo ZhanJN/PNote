@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:appflowy_editor/appflowy_editor.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -13,6 +16,55 @@ final Uint8List _tinyPng = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGA'
   'hKmMIQAAAABJRU5ErkJggg==',
 );
+
+/// 造一张真 PNG（纯色）：悬停菜单要图片真的占位，1×1 会让整个块是 0×0，
+/// 菜单按钮就被 Stack 裁掉、点不到。必须在 runAsync 里调用。
+Future<Uint8List> _makePng(int width, int height) async {
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.drawRect(
+    Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+    Paint()..color = const Color(0xFF508CDC),
+  );
+  final picture = recorder.endRecording();
+  final image = await picture.toImage(width, height);
+  final data = await image.toByteData(format: ui.ImageByteFormat.png);
+  image.dispose();
+  picture.dispose();
+  return data!.buffer.asUint8List();
+}
+
+/// 图片块菜单按钮：Tooltip 包着 IconButton，Tooltip 自己的渲染盒是布局代理，
+/// 直接 tap find.byTooltip 会点到旁边的空白，必须落到里面的 IconButton。
+Finder _menuButton(String tooltip) => find.ancestor(
+  of: find.byTooltip(tooltip),
+  matching: find.byType(IconButton),
+);
+
+/// 把图片真正解码进 ImageCache：FakeAsync 里 Image.file 永远不会完成加载，
+/// 块会停在 0×0，悬停菜单也就没地方可点。要在 runAsync 里调用。
+Future<void> _preload(File file) {
+  final provider = FileImage(file);
+  final stream = provider.resolve(ImageConfiguration.empty);
+  final completer = Completer<void>();
+  late ImageStreamListener listener;
+  listener = ImageStreamListener(
+    (info, sync) {
+      stream.removeListener(listener);
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+    },
+    onError: (error, stack) {
+      stream.removeListener(listener);
+      if (!completer.isCompleted) {
+        completer.completeError(error, stack);
+      }
+    },
+  );
+  stream.addListener(listener);
+  return completer.future;
+}
 
 void main() {
   Widget wrap(Widget child, {ThemeData? theme}) {
@@ -212,5 +264,75 @@ void main() {
       isTrue,
     );
     expect(markdown, contains('![[新图.png]]'));
+  });
+
+  testWidgets('1.65 悬停图片可替换 / 删除，且写回 Markdown', (tester) async {    final dir = Directory.systemTemp.createTempSync('pe_img_hover');
+    addTearDown(() {
+      try {
+        dir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+    late Uint8List png;
+    await tester.runAsync(() async {
+      png = await _makePng(200, 120);
+    });
+    final a = File('${dir.path}/a.png')..writeAsBytesSync(png);
+    final b = File('${dir.path}/b.png')..writeAsBytesSync(png);
+    // 真实文件 IO 与图片解码都要放在 runAsync 里，否则 FakeAsync 等不到。
+    await tester.runAsync(() async {
+      await _preload(a);
+      await _preload(b);
+    });
+
+    final controller = PeEditorController();
+    var markdown = '';
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '![[a.png]]',
+          onChanged: (text) => markdown = text,
+          controller: controller,
+          onPickImage: () async => 'b.png',
+          assetPath: (name) => switch (name) {
+            'a.png' => a.path,
+            'b.png' => b.path,
+            _ => null,
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    addTearDown(mouse.removePointer);
+
+    // 悬停图片块：appflowy 只在 MouseRegion.onEnter 时显示菜单。
+    await mouse.moveTo(tester.getCenter(find.byType(Image).first));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.byTooltip('替换图片'), findsOneWidget);
+    expect(find.byTooltip('删除图片'), findsOneWidget);
+
+    await tester.tap(_menuButton('替换图片'));
+    // 写回 Markdown 有 120 ms 防抖，等过它。
+    await tester.pump(const Duration(milliseconds: 250));
+    final state = tester.state<PEditorState>(find.byType(PEditor));
+    final image = state.editorState.document.root.children.firstWhere(
+      (node) => node.type == 'image',
+    );
+    expect(image.attributes['url'], b.path);
+    expect(markdown, contains('![[b.png]]'));
+
+    await mouse.moveTo(tester.getCenter(find.byType(Image).first));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(_menuButton('删除图片'));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(
+      state.editorState.document.root.children.any(
+        (node) => node.type == 'image',
+      ),
+      isFalse,
+    );
   });
 }
