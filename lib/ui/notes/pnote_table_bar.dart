@@ -33,7 +33,6 @@ class PnoteTableBlockComponentBuilder extends TableBlockComponentBuilder {
 /// 极薄的容器：把上游表格 widget 和我们的操作栏竖着排。
 class _PnoteTableBlockWidget extends BlockComponentStatelessWidget {
   const _PnoteTableBlockWidget({
-    super.key,
     required super.node,
     required super.configuration,
     required this.tableWidget,
