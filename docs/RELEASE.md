@@ -6,14 +6,14 @@
 
 ## 一、版本号规则
 
-- 功能版本：`1.64.2`（PEditor 配色统一）→ 小版本号 +1
-- 缺陷修复：`1.63.4`（修 1.63 的 bug，行为不变）
+- 功能版本：`1.65.0`（PEditor 图片切片）→ 小版本号 +1
+- 缺陷修复：`1.65.5`（修 1.65.4 的 bug，行为不变）
 - 协议版本独立演进：`pnote-sync/8`。**协议主版本变化时两端必须一起升级**，Release 说明里要写清楚
 
 `pubspec.yaml` 的 `version` 同时决定 Windows 文件版本与 Android `versionName`/`versionCode`：
 
 ```yaml
-version: 1.64.2+16402   # 语义版本 + 构建号（Android 靠 +N 判断升级）
+version: 1.65.6+16506   # 语义版本 + 构建号（Android 靠 +N 判断升级）
 ```
 
 每次发版 `+N` 必须比上一个安装包大，否则 Android 不允许覆盖安装。
@@ -49,13 +49,13 @@ Compress-Archive -Path 'build\windows\x64\runner\Release\*' `
                  -DestinationPath "PNote-<版本>-windows-x64.zip"
 ```
 
-Android（arm64 覆盖绝大多数手机；v7a 给老机器）：
+Android（本项目只出 arm64 单包，覆盖绝大多数手机）：
 
 ```bash
-flutter build apk --release --split-per-abi
+flutter build apk --release --target-platform android-arm64
 ```
 
-产物：`build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`。发布时改名为
+产物：`build/app/outputs/flutter-apk/app-release.apk`。发布时改名为
 `PNote-<版本>-android-arm64-v8a.apk`，方便人看。
 
 > 构建前记得设置 `FLUTTER_STORAGE_BASE_URL` / `PUB_HOSTED_URL`（国内网络）与
@@ -70,11 +70,11 @@ Get-FileHash PNote-<版本>-android-arm64-v8a.apk -Algorithm SHA256
 
 ## 四、正式版目录与归档
 
-发布目录按版本号命名，不再用 V1/V2/V3：
+发布目录按版本号命名，不再用 V1/V2/V3（下面用 `<发布目录>` 代指，例如 `D:\PNote_1.65.6`）：
 
 ```
-D:\PNote_<版本>\           例如 D:\PNote_1.64\，用户直接运行这里的 pc\pnote.exe
-  pc\                      Windows Release 全量文件
+<发布目录>\PNote_<版本>\
+  pc\                      Windows Release 全量文件（用户直接运行 pc\pnote.exe）
   android\PNote.apk         手机安装包
   使用说明.txt  版本说明.txt
   PNote笔记库\              用户笔记（不打包进归档）
@@ -93,13 +93,13 @@ git tag -a v<版本> -m "PNote <版本> - <一句话主题>"
 git push origin v<版本>
 ```
 
-标签名统一 `v` + 语义版本（`v1.64.2`），Release 会自动关联到它对应的提交。
+标签名统一 `v` + 语义版本（`v1.65.6`），Release 会自动关联到它对应的提交。
 
 ## 六、创建 Release（网页操作）
 
 1. 打开 <https://github.com/ZhanJN/PNote/releases/new>
-2. **Choose a tag** 选刚推上去的 `v1.64.2`（若没有就手填，GitHub 会在发布时创建）
-3. **Release title**：`PNote 1.62.1 — 编辑器与预览修正`
+2. **Choose a tag** 选刚推上去的 `v1.65.6`（若没有就手填，GitHub 会在发布时创建）
+3. **Release title**：`PNote 1.65.6 — 手机表格操作栏`
 4. **Describe this release**：写三段即可
    - 这一版多了什么（用户视角）
    - 怎么装（Windows 解压双击 / Android 直接装）
@@ -114,11 +114,11 @@ git push origin v<版本>
 没写时把 `--notes-file docs/release-notes/<版本>.md` 换成 `--notes "…"`）：
 
 ```bash
-gh release create v1.62.1 \
-  --title "PNote 1.62.1 — 编辑器与预览修正" \
-  --notes-file docs/release-notes/1.62.1.md \
-  PNote-1.62.1-windows-x64.zip \
-  PNote-1.62.1-android-arm64-v8a.apk
+gh release create v1.65.6 \
+  --title "PNote 1.65.6 — 手机表格操作栏" \
+  --notes-file docs/release-notes/1.65.6.md \
+  PNote-1.65.6-windows-x64.zip \
+  PNote-1.65.6-android-arm64-v8a.apk
 ```
 
 没有 `gh` 时也可以用 REST API（需要 `repo` 权限的 token）：
@@ -127,12 +127,12 @@ gh release create v1.62.1 \
 curl -X POST -H "Authorization: token $TOKEN" \
      -H "Accept: application/vnd.github+json" \
      https://api.github.com/repos/ZhanJN/PNote/releases \
-     -d @release.json         # {"tag_name":"v1.62.1","name":"...","body":"...","draft":false}
+     -d @release.json         # {"tag_name":"v1.65.6","name":"...","body":"...","draft":false}
 
 curl -X POST -H "Authorization: token $TOKEN" \
      -H "Content-Type: application/zip" \
-     --data-binary @PNote-1.62.1-windows-x64.zip \
-     "https://uploads.github.com/repos/ZhanJN/PNote/releases/<release_id>/assets?name=PNote-1.62.1-windows-x64.zip"
+     --data-binary @PNote-1.65.6-windows-x64.zip \
+     "https://uploads.github.com/repos/ZhanJN/PNote/releases/<release_id>/assets?name=PNote-1.65.6-windows-x64.zip"
 ```
 
 ## 八、发布后
@@ -146,8 +146,8 @@ curl -X POST -H "Authorization: token $TOKEN" \
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `push` 报 `schannel: server closed abruptly` | 走了 gh-proxy 之类的只读镜像，或系统代理没开 | 检查 `git remote -v` 别用镜像地址；必要时设 `HTTPS_PROXY` |
+| `push` 报 `schannel: server closed abruptly` / `Recv failure: Connection was reset` | 网络到 GitHub 不稳定，或走了只读镜像/没开代理 | 换网络重试；检查 `git remote -v` 别用镜像地址；必要时设 `HTTPS_PROXY` |
 | `! [rejected] main -> main (fetch first)` | 远端有 GitHub 自动生成的初始提交 | `git pull --rebase origin main` 后重推，或确认要覆盖时用 `--force-with-lease` |
 | `flutter build apk` 报 `No Android SDK found` | 没设 `ANDROID_HOME` | 见 [BUILD.md](BUILD.md) |
-| Windows 包双击打不开、或数据库报错 | 放在「工作区/低完整性」目录里运行 | 挪到普通目录（例如 `D:\PNote`）再运行 |
+| Windows 包双击打不开、或数据库报错 | 放在「工作区/低完整性」目录里运行 | 挪到普通目录（例如 `<发布目录>\PNote_1.65.6`）再运行 |
 | 新版本装不上手机 | `versionCode` 没变大 | 改 `pubspec.yaml` 的 `+N` |

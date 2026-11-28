@@ -5,7 +5,7 @@ setlocal
 cd /d "%~dp0"
 
 if not defined ANDROID_HOME if exist "%LOCALAPPDATA%\Android\Sdk" set "ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk"
-if not defined ANDROID_HOME if exist "C:\AndroidSdk" set "ANDROID_HOME=C:\AndroidSdk"
+if not defined ANDROID_HOME if defined ANDROID_SDK_ROOT set "ANDROID_HOME=%ANDROID_SDK_ROOT%"
 if not defined ANDROID_HOME (
   echo [FAIL] Android SDK not found. Set ANDROID_HOME.
   pause

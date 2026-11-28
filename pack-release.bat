@@ -1,7 +1,7 @@
 @echo off
 rem Rebuild an "archive copy" of the current release folder and verify it file by file.
 rem Usage: pack-release.bat [src] [dst]
-rem   default src = D:\PNote_<version>   (version read from pubspec.yaml)
+rem   default src = <repo>\..\PNote_<version>   (version read from pubspec.yaml)
 rem   default dst = <this repo>\..\PNote_<version>
 setlocal
 cd /d "%~dp0"
@@ -15,7 +15,7 @@ if "%VER%"=="" (
 )
 
 set "SRC=%~1"
-if "%SRC%"=="" set "SRC=D:\PNote_%VER%"
+if "%SRC%"=="" set "SRC=%~dp0..\PNote_%VER%"
 set "DST=%~2"
 if "%DST%"=="" set "DST=%~dp0..\PNote_%VER%"
 

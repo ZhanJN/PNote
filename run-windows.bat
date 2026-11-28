@@ -4,7 +4,7 @@ rem Optional: set FLUTTER_HOME, FLUTTER_STORAGE_BASE_URL, PUB_HOSTED_URL.
 setlocal
 cd /d "%~dp0"
 
-if not defined FLUTTER_HOME set "FLUTTER_HOME=D:\dev\flutter"
+rem 若 flutter 不在 PATH，先 set FLUTTER_HOME=<Flutter SDK 根目录>
 if exist "%FLUTTER_HOME%\bin\flutter.bat" set "PATH=%FLUTTER_HOME%\bin;%PATH%"
 
 where flutter >nul 2>nul
