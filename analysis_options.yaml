@@ -14,6 +14,9 @@ analyzer:
     - build/**
     - android/**
     - windows/**
+    # 1.64：third_party 里是 fork 的 appflowy_editor，按上游代码风格保留，
+    # 不参与本项目的 lint（否则会有上百条 material / deprecated 提示）。
+    - third_party/**
 
 linter:
   # The lint rules applied to this project can be customized in the

@@ -12,3 +12,13 @@ const String kNoteListPreviewKey = 'note_list_preview';
 
 /// 当前是否在列表里显示笔记首行。
 final ValueNotifier<bool> noteListPreview = ValueNotifier<bool>(false);
+
+/// 1.64：编辑器内核。`legacy` = 现有块编辑器；`pe` = appflowy_editor。
+const String kEditorKernelKey = 'editor_kernel';
+const String kEditorKernelLegacy = 'legacy';
+const String kEditorKernelPe = 'pe';
+
+/// 当前使用哪套编辑器内核（全局，切页即时生效）。
+final ValueNotifier<String> editorKernel = ValueNotifier<String>(
+  kEditorKernelLegacy,
+);

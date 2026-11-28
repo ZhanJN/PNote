@@ -73,7 +73,7 @@ Get-FileHash PNote-<版本>-android-arm64-v8a.apk -Algorithm SHA256
 发布目录按版本号命名，不再用 V1/V2/V3：
 
 ```
-D:\PNote_<版本>\           例如 D:\PNote_1.63\，用户直接运行这里的 pc\pnote.exe
+D:\PNote_<版本>\           例如 D:\PNote_1.64\，用户直接运行这里的 pc\pnote.exe
   pc\                      Windows Release 全量文件
   android\PNote.apk         手机安装包
   使用说明.txt  版本说明.txt

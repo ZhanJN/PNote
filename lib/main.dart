@@ -28,6 +28,11 @@ Future<void> main() async {
     // 1.59：笔记列表是否显示首行预览（本机偏好，设置页里改）。
     noteListPreview.value =
         (await dao.readSetting(kNoteListPreviewKey)) == '1';
+    // 1.64：编辑器内核（实验开关，默认仍是旧块编辑器）。
+    editorKernel.value =
+        (await dao.readSetting(kEditorKernelKey)) == kEditorKernelPe
+            ? kEditorKernelPe
+            : kEditorKernelLegacy;
     // 1.47：笔记也进同步。版本用同一个 HLC 时钟，读写在笔记库目录里，
     // 和任务库互不依赖（笔记同步失败不该影响任务同步，反之亦然）。
     final notesSync = NotesSync(

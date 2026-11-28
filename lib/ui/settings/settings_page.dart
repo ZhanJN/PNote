@@ -144,6 +144,8 @@ class SettingsPage extends StatelessWidget {
                 const _NotesLibraryTile(),
                 const Divider(height: 1),
                 _NoteListPreviewTile(dao: controller.dao),
+                const Divider(height: 1),
+                _EditorKernelTile(dao: controller.dao),
               ],
             ),
           ),
@@ -271,6 +273,57 @@ class _NoteListPreviewTileState extends State<_NoteListPreviewTile> {
       secondary: const Icon(Icons.article_outlined),
       title: const Text('列表显示笔记首行'),
       subtitle: const Text('在标题下多显示一行正文摘要'),
+      value: _value ?? false,
+      onChanged: _value == null ? null : _set,
+    );
+  }
+}
+
+/// 「使用新编辑器内核（实验）」（1.64）。
+///
+/// 打开后笔记编辑页改用 appflowy_editor 的 PEditor；出问题可以随时关掉，
+/// 已经保存的 Markdown 文件不受影响。键 editor_kernel，本机偏好、不同步。
+class _EditorKernelTile extends StatefulWidget {
+  const _EditorKernelTile({required this.dao});
+
+  final TaskDao dao;
+
+  @override
+  State<_EditorKernelTile> createState() => _EditorKernelTileState();
+}
+
+class _EditorKernelTileState extends State<_EditorKernelTile> {
+  bool? _value;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final raw = await widget.dao.readSetting(kEditorKernelKey);
+    if (!mounted) return;
+    final value = raw == kEditorKernelPe;
+    editorKernel.value = value ? kEditorKernelPe : kEditorKernelLegacy;
+    setState(() => _value = value);
+  }
+
+  Future<void> _set(bool value) async {
+    setState(() => _value = value);
+    editorKernel.value = value ? kEditorKernelPe : kEditorKernelLegacy;
+    await widget.dao.writeSetting(
+      kEditorKernelKey,
+      value ? kEditorKernelPe : kEditorKernelLegacy,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SwitchListTile(
+      secondary: const Icon(Icons.auto_awesome_outlined),
+      title: const Text('使用新编辑器内核（实验）'),
+      subtitle: const Text('appflowy_editor；出问题可关掉，笔记文件不受影响'),
       value: _value ?? false,
       onChanged: _value == null ? null : _set,
     );

@@ -1,6 +1,16 @@
 # 变更记录
 
-版本号规则：功能版本 + 小数点补丁（如 1.46.1 = 修 1.46 的缺陷）。当前 1.63.4。
+版本号规则：功能版本 + 小数点补丁（如 1.46.1 = 修 1.46 的缺陷）。当前 1.64.0。
+
+## 1.64.0 — PEditor 新编辑器内核（实验）（2026-11-28）
+- appflowy_editor 6.2.0 fork 到 `third_party/appflowy_editor` 自维：补 Flutter 3.50
+  的 `TextInputClient.onFocusReceived`，加 `PeCodeFenceParser` 让 ``` 代码块不丢内容
+- 新增 `lib/notes/pe_markdown.dart`（Markdown ⇄ Document，有序列表导出重编号）与
+  `lib/ui/notes/pe_editor.dart`（120ms 防抖、flush）
+- 设置 → 笔记 新增「使用新编辑器内核（实验）」，默认关（meta `editor_kernel=legacy|pe`）
+- 编辑页按开关在块编辑器 / PEditor 间切换；保存、切源码、切预览前统一 flush
+- 限制：PE 下图片/引用插入暂不可用；代码块无高亮；表格编辑与跨块原生光标后续做
+- 新增 7 条测试，421 → 428 条
 
 ## 1.63.4 — 光标与操作区隔离（2026-11-28）
 - 整块选择时排除选择条、底部工具条区域：点按钮不改选区、不启动贴边滚动

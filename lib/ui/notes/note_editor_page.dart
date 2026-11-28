@@ -20,6 +20,8 @@ import 'package:pnote/notes/notes_render.dart';
 import 'package:pnote/notes/notes_store.dart';
 import 'package:pnote/ui/common/rename_dialog.dart';
 import 'package:pnote/ui/notes/block_editor.dart';
+import 'package:pnote/ui/notes/pe_editor.dart';
+import 'package:pnote/ui/settings/notes_prefs.dart';
 
 class NoteEditorPage extends StatefulWidget {
   const NoteEditorPage({
@@ -48,6 +50,7 @@ class NoteEditorPage extends StatefulWidget {
 class _NoteEditorPageState extends State<NoteEditorPage> {
   final TextEditingController _controller = TextEditingController();
   final GlobalKey<BlockEditorState> _blockKey = GlobalKey<BlockEditorState>();
+  final GlobalKey<PEditorState> _peKey = GlobalKey<PEditorState>();
   var _blocksSerial = 0;
   int? _focusHeadingIndex;
   final ScrollController _scroll = ScrollController();
@@ -148,10 +151,25 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
     _saveTimer = Timer(const Duration(milliseconds: 900), _save);
   }
 
+  /// 1.64：按当前内核把编辑区里还没回写的输入提交给 `_controller`。
+  void _flushEditor() {
+    final pe = _peKey.currentState;
+    if (pe != null) {
+      final markdown = pe.flush();
+      if (markdown != _controller.text) {
+        _mute = true;
+        _controller.text = markdown;
+        _mute = false;
+      }
+      return;
+    }
+    _blockKey.currentState?.flush();
+  }
+
   Future<void> _save() async {
-    // 1.63：保存/切模式前先把块编辑器里还没回写的输入提交，避免吞行。
+    // 1.63：保存/切模式前先把编辑器里还没回写的输入提交，避免吞行。
     if (!_source && !_preview) {
-      _blockKey.currentState?.flush();
+      _flushEditor();
     }
     if (!_dirty || _saving) return;
     final text = _controller.text;
@@ -266,8 +284,8 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   /// 1.60：源码模式——直接编辑整篇 Markdown，给需要精确控制格式的时候用。
   void _toggleSource() {
     if (!_source) {
-      // 切走前把块编辑器的最后输入提交给 controller，不然会少一行。
-      _blockKey.currentState?.flush();
+      // 切走前把编辑器的最后输入提交给 controller，不然会少一行。
+      _flushEditor();
     }
     setState(() {
       _source = !_source;
@@ -296,7 +314,7 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
       return;
     }
     try {
-      if (!_source) _blockKey.currentState?.flush();
+      if (!_source) _flushEditor();
       _refreshDoc();
     } catch (_) {
       // 解析/渲染出错：不进预览，留在编辑模式。
@@ -365,6 +383,10 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   }
 
   Future<void> _insertAsset() async {
+    if (_peKey.currentState != null) {
+      _showMessage('新编辑器内核暂不支持直接插图片，先切回旧内核再插');
+      return;
+    }
     final name = await _importAssetName();
     if (name == null || !mounted) return;
     _blockKey.currentState?.insertImageBlock(name);
@@ -372,6 +394,10 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   }
 
   Future<void> _insertLink() async {
+    if (_peKey.currentState != null) {
+      _showMessage('新编辑器内核暂不支持插入笔记链接，先切回旧内核再用');
+      return;
+    }
     final snippet = await _pickLinkSnippet();
     if (snippet == null || !mounted) return;
     _blockKey.currentState?.insertSnippet(snippet);
@@ -701,6 +727,14 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
             hintText: '这里是纯 Markdown，可以直接改',
           ),
         ),
+      );
+    }
+    // 1.64：实验开关打开时用 appflowy_editor 内核。
+    if (editorKernel.value == kEditorKernelPe) {
+      return PEditor(
+        key: ValueKey<String>('pe-$_blocksSerial-${_note.relPath}'),
+        initialText: _controller.text,
+        onChanged: _onBlocksChanged,
       );
     }
     // 1.57：块状编辑器。每个段落是一个块，标题/列表/待办/图片直接在原位排版。

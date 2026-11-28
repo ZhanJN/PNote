@@ -1,0 +1,29 @@
+group 'com.nschairer.keyboard_height_plugin'
+version '1.0-SNAPSHOT'
+
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+android {
+    // 1.64：原包写死 31，与项目其他 AndroidX 依赖（要求 36）冲突；
+    // 这里统一到 36，并去掉包内自带的旧 buildscript（交给根工程）。
+    compileSdk 36
+    namespace 'com.nschairer.keyboard_height_plugin'
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    kotlinOptions {
+        jvmTarget = '11'
+    }
+
+    sourceSets {
+        main.java.srcDirs += 'src/main/kotlin'
+    }
+
+    defaultConfig {
+        minSdk 24
+    }
+}

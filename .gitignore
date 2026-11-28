@@ -56,3 +56,5 @@ app.*.map.json
 /windows/flutter/ephemeral/
 # 本地笔记库（若在项目根目录启动过 App）
 /PNote笔记库/
+
+/android/build/
