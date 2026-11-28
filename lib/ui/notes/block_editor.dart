@@ -87,6 +87,7 @@ class BlockEditorState extends State<BlockEditor> {
   final ScrollController _scroll = ScrollController();
   final GlobalKey _listBoxKey = GlobalKey();
   final GlobalKey _barKey = GlobalKey();
+  final GlobalKey _toolbarKey = GlobalKey();
   Timer? _edgeTimer;
   Offset? _pointerAt;
   Offset? _downAt;
@@ -788,7 +789,12 @@ class BlockEditorState extends State<BlockEditor> {
           if (_blockSelecting)
             KeyedSubtree(key: _barKey, child: _blockSelectionBar(theme)),
           Expanded(
-            child: KeyedSubtree(
+            child: MouseRegion(
+              // 1.63.4：整块选择时把系统 I 形光标收掉，只显示 App 自己的选区。
+              cursor: _blockSelecting
+                  ? SystemMouseCursors.basic
+                  : MouseCursor.defer,
+              child: KeyedSubtree(
               key: ValueKey(_serial),
               child: ListView.builder(
                 key: _listBoxKey,
@@ -813,8 +819,9 @@ class BlockEditorState extends State<BlockEditor> {
                 },
               ),
             ),
+            ),
           ),
-          _toolbar(theme),
+          KeyedSubtree(key: _toolbarKey, child: _toolbar(theme)),
         ],
       ),
     );
@@ -854,16 +861,23 @@ class BlockEditorState extends State<BlockEditor> {
 
   /// 1.63.1：点「复制/剪切/取消」时，明确把选择条区域排除在选区判定之外，
   /// 否则手机上一按按钮，选区会跳成按钮正下方那一块。
-  bool _tapInBar(Offset global) {
-    final box = _barKey.currentContext?.findRenderObject() as RenderBox?;
+  bool _hitArea(GlobalKey key, Offset global) {
+    final box = key.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return false;
     final rect = box.localToGlobal(Offset.zero) & box.size;
     return rect.contains(global);
   }
 
+  bool _tapInBar(Offset global) => _hitArea(_barKey, global);
+
+  /// 1.63.4：选择条和底部工具条都算「操作区」，整块选择时指针落到这里
+  /// 不能改变选区（否则一按按钮，选区就缩成按钮下方那一块）。
+  bool _tapInChrome(Offset global) =>
+      _tapInBar(global) || _hitArea(_toolbarKey, global);
+
   void _onPointerDown(PointerDownEvent event) {
     _rememberSelections();
-    if (_blockSelecting && _tapInBar(event.position)) {
+    if (_tapInChrome(event.position)) {
       _pointerDown = false;
       _longPress?.cancel();
       _longPress = null;
@@ -892,8 +906,15 @@ class BlockEditorState extends State<BlockEditor> {
     // 避免手机上系统选择菜单和块选择同时出现，复制到错的文本。
     _longPress = Timer(const Duration(milliseconds: 320), () {
       if (!mounted || !_pointerDown) return;
-      // 进入整块选择：先让文本框失焦，避免和文字选区/键盘打架。
+      // 1.63.4：进入整块选择先把文字选区收成光标位置再失焦，
+      // 否则系统光标/选区高亮会和 App 的整块选区同时显示。
       for (final entry in _entries) {
+        final sel = entry.controller.selection;
+        if (sel.isValid) {
+          entry.controller.selection = TextSelection.collapsed(
+            offset: sel.extentOffset.clamp(0, entry.controller.text.length),
+          );
+        }
         entry.focus.unfocus();
       }
       setState(() {
@@ -923,6 +944,7 @@ class BlockEditorState extends State<BlockEditor> {
   void _edgeTick() {
     final pointer = _pointerAt ?? _downAt;
     if (!_blockSelecting || pointer == null || !_scroll.hasClients) return;
+    if (_tapInChrome(pointer)) return;
     final box = _listBoxKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return;
     // 用列表的全局矩形判断，指针跑到列表外（比如压到工具条上）也能继续滚。
@@ -961,7 +983,7 @@ class BlockEditorState extends State<BlockEditor> {
       };
 
   /// 指针是否在列表（含上下 48 px 缓冲）范围内。用于避免点选择条时误扩展选区。
-  bool _withinList(Offset global, {double pad = 48}) {
+  bool _withinList(Offset global, {double pad = 0}) {
     final box = _listBoxKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return false;
     final top = box.localToGlobal(Offset.zero).dy;
@@ -972,7 +994,7 @@ class BlockEditorState extends State<BlockEditor> {
   void _onPointerMove(PointerMoveEvent event) {
     if (_blockSelecting) {
       // 指针跑到选择条/工具条上时不参与选区扩展，也不贴边滚动。
-      if (!_withinList(event.position)) {
+      if (_tapInChrome(event.position) || !_withinList(event.position)) {
         _stopEdgeScroll();
         return;
       }
@@ -986,8 +1008,8 @@ class BlockEditorState extends State<BlockEditor> {
     }
     final down = _downAt;
     if (!_pointerDown || down == null) return;
-    // 长按要求手指/鼠标基本不动；移动超过 3 像素就取消，避免直接拖拉选字时误触。
-    if ((event.position - down).distance > 3) {
+    // 长按要求指针完全不动；一有位移就取消，直接拖拉选字优先交给 TextField。
+    if ((event.position - down).distance > 1) {
       _longPress?.cancel();
       _longPress = null;
     }

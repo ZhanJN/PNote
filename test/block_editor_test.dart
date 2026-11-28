@@ -479,6 +479,34 @@ void main() {
     expect(last, '四');
   });
 
+  testWidgets('1.63.4 整块选择时点工具条不会改动选区', (tester) async {
+    last = '';
+    const text = '一\n二\n三\n四';
+    await tester.pumpWidget(wrap(text));
+    await tester.pump();
+
+    Future<void> enterSelect() async {
+      final gesture = await tester
+          .startGesture(tester.getCenter(find.byType(TextField).first));
+      await tester.pump(const Duration(milliseconds: 500));
+      await gesture.up();
+      await tester.pump();
+    }
+
+    await enterSelect();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.tapAt(tester.getCenter(find.byType(TextField).at(2)));
+    await tester.pump();
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+    await tester.pump();
+    expect(find.text('已选 3 段'), findsOneWidget);
+
+    // 工具条属于操作区：按下不能把选区缩成按钮下方的那一块。
+    await tester.tap(find.byTooltip('加粗'));
+    await tester.pump();
+    expect(find.text('已选 3 段'), findsOneWidget);
+  });
+
   testWidgets('1.62 Ctrl+C 复制选中块到剪贴板', (tester) async {
     last = '';
     String? clip;
