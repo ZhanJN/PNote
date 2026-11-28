@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:appflowy_editor/appflowy_editor.dart'
+    show AppFlowyEditorLocalizations;
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter_localizations/flutter_localizations.dart'
@@ -84,6 +86,9 @@ class _PNoteAppState extends State<PNoteApp> with WidgetsBindingObserver {
             locale: const Locale('zh', 'CN'),
             supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
             localizationsDelegates: [
+              // 1.65：新编辑器（appflowy_editor）自带的字符串（`/` 菜单项、
+              // 链接弹窗等）也走中文，否则会混进英文。
+              AppFlowyEditorLocalizations.delegate,
               GlobalMaterialLocalizations.delegate,
               GlobalWidgetsLocalizations.delegate,
             ],

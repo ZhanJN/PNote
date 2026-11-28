@@ -2,10 +2,13 @@ import 'dart:async';
 
 import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:desktop_drop/desktop_drop.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../notes/pe_code_block.dart';
 import '../../notes/pe_markdown.dart';
+import 'pnote_code_block.dart';
 
 /// 外层页面持有的 PEditor 句柄：插入图片、回写 Markdown。
 ///
@@ -31,6 +34,16 @@ class PeEditorController {
     await _state?.insertImage(name);
   }
 
+  /// 把 `[[笔记名]]` 插到光标处；没有光标时追加到文末。
+  Future<void> insertNoteLink(String raw) async {
+    await _state?.insertNoteLink(raw);
+  }
+
+  /// 在光标处插一个 2×2 空表格；没有光标时追加到文末。
+  Future<void> insertTable() async {
+    await _state?.insertTable();
+  }
+
   /// 把编辑器里还没回写的输入转成 Markdown；没有编辑器时返回 null。
   String? flush() => _state?.flush();
 }
@@ -52,6 +65,8 @@ class PEditor extends StatefulWidget {
     this.onPasteImage,
     this.onImportImageBytes,
     this.onDropImage,
+    this.onPickLink,
+    this.onOpenNote,
   });
 
   final String initialText;
@@ -78,6 +93,12 @@ class PEditor extends StatefulWidget {
   /// 1.65：把拖进窗口的文件存进笔记库，返回素材名。
   final Future<String?> Function(String path)? onDropImage;
 
+  /// 1.65：选一篇笔记，返回 `[[名字]]` 片段（插入笔记引用用）。
+  final Future<String?> Function()? onPickLink;
+
+  /// 1.65：点 `[[名字]]` 时打开那篇笔记（参数是 `[[名字]]` 原串）。
+  final void Function(String raw)? onOpenNote;
+
   @override
   State<PEditor> createState() => PEditorState();
 }
@@ -92,6 +113,50 @@ class PEditorState extends State<PEditor> {
   Timer? _debounce;
   late String _lastMarkdown;
   bool _fixingTrailing = false;
+
+  /// 1.65：`[[名字]]` 的点击识别器，每次重建前统一释放（和预览页一个套路）。
+  final List<TapGestureRecognizer> _linkRecognizers = <TapGestureRecognizer>[];
+
+  void _disposeLinkRecognizers() {
+    for (final recognizer in _linkRecognizers) {
+      recognizer.dispose();
+    }
+    _linkRecognizers.clear();
+  }
+
+  /// 1.65：`[[名字]]` 单击直接打开那篇笔记；上游默认单击只弹「编辑链接」。
+  InlineSpan _decorateSpan(
+    BuildContext context,
+    Node node,
+    int index,
+    TextInsert text,
+    TextSpan before,
+    TextSpan after,
+  ) {
+    final href = text.attributes?[AppFlowyRichTextKeys.href];
+    final open = widget.onOpenNote;
+    if (href is String && open != null) {
+      final raw = peNoteRefRaw(href);
+      if (raw != null) {
+        final recognizer = TapGestureRecognizer()..onTap = () => open(raw);
+        _linkRecognizers.add(recognizer);
+        return TextSpan(
+          text: text.text,
+          style: before.style,
+          recognizer: recognizer,
+          mouseCursor: SystemMouseCursors.click,
+        );
+      }
+    }
+    return defaultTextSpanDecoratorForAttribute(
+      context,
+      node,
+      index,
+      text,
+      before,
+      after,
+    );
+  }
 
   @override
   void initState() {
@@ -209,9 +274,148 @@ class PEditorState extends State<PEditor> {
     await _editorState.apply(transaction);
   }
 
+  /// 1.65：把 `[[笔记名]]` 插到光标处；带 `href` 属性，点了能打开那篇笔记。
+  ///
+  /// 显示的是不带方括号的笔记名（方括号只在磁盘上的 Markdown 里）。
+  /// 没有光标（例如刚切换内核）时追加到文末，不丢用户已经选好的引用。
+  Future<void> insertNoteLink(String raw) async {
+    if (widget.readOnly) {
+      return;
+    }
+    final text = peNoteRefBody(raw);
+    if (text.isEmpty) {
+      return;
+    }
+    final attributes = <String, Object>{
+      AppFlowyRichTextKeys.href: peNoteRefHref(text),
+    };
+    final selection = _editorState.selection;
+    final node = (selection == null || !selection.isCollapsed)
+        ? null
+        : _editorState.getNodeAtPath(selection.start.path);
+    if (selection == null || node == null || node.delta == null) {
+      final count = _editorState.document.root.children.length;
+      final paragraph = paragraphNode(
+        delta: Delta()..insert(text, attributes: attributes),
+      );
+      final transaction = _editorState.transaction
+        ..insertNode([count], paragraph);
+      transaction.afterSelection = Selection.collapsed(
+        Position(path: [count], offset: text.length),
+      );
+      await _editorState.apply(transaction);
+      return;
+    }
+    final plain = node.delta!.toPlainText();
+    final start = selection.start.offset.clamp(0, plain.length);
+    final end = selection.end.offset.clamp(0, plain.length);
+    final transaction = _editorState.transaction;
+    if (end > start) {
+      transaction.deleteText(node, start, end - start);
+    }
+    transaction.insertText(node, start, text, attributes: attributes);
+    transaction.afterSelection = Selection.collapsed(
+      Position(path: selection.start.path, offset: start + text.length),
+    );
+    await _editorState.apply(transaction);
+  }
+
+  /// 1.65：在光标处插入一个空代码块，后面补一个空段落（方便继续写正文）。
+  Future<void> insertCodeBlock() async {
+    if (widget.readOnly) {
+      return;
+    }
+    final code = pnoteCodeNode();
+    final paragraph = paragraphNode();
+    final selection = _editorState.selection;
+    final anchor = (selection == null || !selection.isCollapsed)
+        ? null
+        : _editorState.getNodeAtPath(selection.end.path);
+    if (anchor == null) {
+      final count = _editorState.document.root.children.length;
+      final transaction = _editorState.transaction
+        ..insertNode([count], code)
+        ..insertNode([count + 1], paragraph);
+      transaction.afterSelection = Selection.collapsed(
+        Position(path: [count + 1]),
+      );
+      await _editorState.apply(transaction);
+      return;
+    }
+    final transaction = _editorState.transaction;
+    final isEmptyParagraph = anchor.type == ParagraphBlockKeys.type &&
+        (anchor.delta?.isEmpty ?? false);
+    if (isEmptyParagraph) {
+      transaction
+        ..insertNode(anchor.path, code)
+        ..deleteNode(anchor)
+        ..insertNode(anchor.path.next, paragraph);
+      transaction.afterSelection = Selection.collapsed(
+        Position(path: anchor.path.next),
+      );
+      await _editorState.apply(transaction);
+      return;
+    }
+    transaction
+      ..insertNode(anchor.path.next, code)
+      ..insertNode(anchor.path.next.next, paragraph);
+    transaction.afterSelection = Selection.collapsed(
+      Position(path: anchor.path.next.next),
+    );
+    await _editorState.apply(transaction);
+  }
+
+  /// 1.65：在光标处插入一个 2×2 的空表格，后面补一个空段落，光标落进左上角。
+  Future<void> insertTable() async {
+    if (widget.readOnly) {
+      return;
+    }
+    final table = TableNode.fromList([
+      ['', ''],
+      ['', ''],
+    ]).node;
+    final paragraph = paragraphNode();
+    final selection = _editorState.selection;
+    final anchor = (selection == null || !selection.isCollapsed)
+        ? null
+        : _editorState.getNodeAtPath(selection.end.path);
+    if (anchor == null) {
+      final count = _editorState.document.root.children.length;
+      final transaction = _editorState.transaction
+        ..insertNode([count], table)
+        ..insertNode([count + 1], paragraph);
+      transaction.afterSelection = Selection.collapsed(
+        Position(path: [count, 0, 0]),
+      );
+      await _editorState.apply(transaction);
+      return;
+    }
+    final transaction = _editorState.transaction;
+    final isEmptyParagraph = anchor.type == ParagraphBlockKeys.type &&
+        (anchor.delta?.isEmpty ?? false);
+    if (isEmptyParagraph) {
+      transaction
+        ..insertNode(anchor.path, table)
+        ..deleteNode(anchor)
+        ..insertNode(anchor.path.next, paragraph);
+      transaction.afterSelection = Selection.collapsed(
+        Position(path: [...anchor.path, 0, 0]),
+      );
+      await _editorState.apply(transaction);
+      return;
+    }
+    transaction
+      ..insertNode(anchor.path.next, table)
+      ..insertNode(anchor.path.next.next, paragraph);
+    transaction.afterSelection = Selection.collapsed(
+      Position(path: [...anchor.path.next, 0, 0]),
+    );
+    await _editorState.apply(transaction);
+  }
+
   /// 1.65：`/` 菜单里的「图片」原本是贴网络图片 URL，这里换成选本地素材。
   List<CharacterShortcutEvent>? _characterShortcuts(ThemeData theme) {
-    if (widget.onPickImage == null) {
+    if (widget.readOnly) {
       return null;
     }
     return [
@@ -229,9 +433,12 @@ class PEditorState extends State<PEditor> {
 
   List<SelectionMenuItem> _slashMenuItems() {
     final imageLabel = AppFlowyEditorL10n.current.image;
+    final tableLabel = AppFlowyEditorL10n.current.table;
     return [
       for (final item in standardSelectionMenuItems)
-        if (item.name != imageLabel)
+        if (item.name == tableLabel)
+          _tableMenuItem()
+        else if (item.name != imageLabel || widget.onPickImage == null)
           item
         else
           SelectionMenuItem(
@@ -242,7 +449,136 @@ class PEditorState extends State<PEditor> {
               unawaited(_pickAndInsertImage());
             },
           ),
+      if (widget.onPickLink != null) _noteLinkMenuItem(),
+      _codeBlockMenuItem(),
     ];
+  }
+
+  /// 1.65：`/` 菜单里的「表格」——插一个 2×2 空表，光标落进左上角格子。
+  SelectionMenuItem _tableMenuItem() {
+    return SelectionMenuItem(
+      getName: () => '表格',
+      icon: (editorState, onSelected, style) => Icon(
+        Icons.table_view,
+        size: 20,
+        color: onSelected
+            ? style.selectionMenuItemSelectedIconColor
+            : style.selectionMenuItemIconColor,
+      ),
+      keywords: const ['表格', 'table', 'sheet', '|'],
+      handler: (editorState, menuService, context) {
+        unawaited(_insertTable());
+      },
+    );
+  }
+
+  Future<void> _insertTable() async {
+    if (widget.readOnly) {
+      return;
+    }
+    await insertTable();
+  }
+
+  /// 手机工具条上的「表格」按钮。
+  MobileToolbarItem _tableMobileToolbarItem() {
+    return MobileToolbarItem.action(
+      itemIconBuilder: (context, editorState, service) => Icon(
+        Icons.table_chart_outlined,
+        size: 24,
+        color: MobileToolbarTheme.of(context).iconColor,
+      ),
+      actionHandler: (context, editorState) {
+        unawaited(_insertTable());
+      },
+    );
+  }
+
+  /// 1.65：`/` 菜单里的「代码块」——插入一个空代码块，点它就能写代码。
+  SelectionMenuItem _codeBlockMenuItem() {
+    return SelectionMenuItem(
+      getName: () => '代码块',
+      icon: (editorState, onSelected, style) => Icon(
+        Icons.code,
+        size: 20,
+        color: onSelected
+            ? style.selectionMenuItemSelectedIconColor
+            : style.selectionMenuItemIconColor,
+      ),
+      keywords: const ['代码', '代码块', 'code', 'fence', '```'],
+      handler: (editorState, menuService, context) {
+        unawaited(_insertCodeBlock());
+      },
+    );
+  }
+
+  Future<void> _insertCodeBlock() async {
+    if (widget.readOnly) {
+      return;
+    }
+    await insertCodeBlock();
+  }
+
+  /// 手机工具条上的「代码块」按钮（和上游的行内代码按钮区分开，用终端图标）。
+  MobileToolbarItem _codeBlockMobileToolbarItem() {
+    return MobileToolbarItem.action(
+      itemIconBuilder: (context, editorState, service) => Icon(
+        Icons.terminal,
+        size: 24,
+        color: MobileToolbarTheme.of(context).iconColor,
+      ),
+      actionHandler: (context, editorState) {
+        unawaited(_insertCodeBlock());
+      },
+    );
+  }
+
+  /// 1.65：`/` 菜单里的「笔记引用」——选一篇笔记，插入 `[[名字]]`。
+  SelectionMenuItem _noteLinkMenuItem() {
+    return SelectionMenuItem(
+      getName: () => '笔记引用',
+      icon: (editorState, onSelected, style) => Icon(
+        Icons.article_outlined,
+        size: 20,
+        color: onSelected
+            ? style.selectionMenuItemSelectedIconColor
+            : style.selectionMenuItemIconColor,
+      ),
+      keywords: const ['引用', '笔记', 'note', 'link', 'reference', 'ref'],
+      handler: (editorState, menuService, context) {
+        unawaited(_pickAndInsertNoteLink());
+      },
+    );
+  }
+
+  /// 手机工具条上的「笔记引用」按钮。
+  MobileToolbarItem _noteLinkMobileToolbarItem() {
+    return MobileToolbarItem.action(
+      itemIconBuilder: (context, editorState, service) => Icon(
+        Icons.article_outlined,
+        size: 24,
+        color: MobileToolbarTheme.of(context).iconColor,
+      ),
+      actionHandler: (context, editorState) {
+        unawaited(_pickAndInsertNoteLink());
+      },
+    );
+  }
+
+  Future<void> _pickAndInsertNoteLink() async {
+    final pick = widget.onPickLink;
+    if (pick == null || widget.readOnly) {
+      return;
+    }
+    final saved = _editorState.selection;
+    final raw = await pick();
+    if (raw == null || raw.trim().isEmpty || !mounted) {
+      return;
+    }
+    // 选笔记期间编辑器可能丢焦点，回来先把光标放回去再插入。
+    if (_editorState.selection == null && saved != null) {
+      _editorState.updateSelectionWithReason(saved);
+    }
+    await insertNoteLink(raw);
   }
 
   /// 手机工具条上的插图按钮（appflowy 自带的图标集里没有图片图标）。
@@ -259,18 +595,23 @@ class PEditorState extends State<PEditor> {
     );
   }
 
-  /// 1.65：图片块悬停时显示「替换 / 删除」，用的是 appflowy 的 menuBuilder。
+  /// 1.65：图片块悬停时显示「替换 / 删除」，用的是 appflowy 的 menuBuilder；
+  /// 代码块用自定义组件（上游 6.2.0 只有 Markdown 编解码，没有界面）。
   Map<String, BlockComponentBuilder> _blockBuilders() {
-    if (widget.onPickImage == null || widget.readOnly) {
-      return standardBlockComponentBuilderMap;
-    }
-    return {
+    final builders = <String, BlockComponentBuilder>{
       ...standardBlockComponentBuilderMap,
-      ImageBlockKeys.type: ImageBlockComponentBuilder(
-        showMenu: true,
-        menuBuilder: _buildImageMenu,
+      PnoteCodeBlockKeys.type: PnoteCodeBlockComponentBuilder(
+        editorState: _editorState,
+        editable: !widget.readOnly,
       ),
     };
+    if (widget.onPickImage != null && !widget.readOnly) {
+      builders[ImageBlockKeys.type] = ImageBlockComponentBuilder(
+        showMenu: true,
+        menuBuilder: _buildImageMenu,
+      );
+    }
+    return builders;
   }
 
   Widget _buildImageMenu(Node node, ImageBlockComponentWidgetState state) {
@@ -476,12 +817,14 @@ class PEditorState extends State<PEditor> {
   void dispose() {
     _debounce?.cancel();
     _sub?.cancel();
+    _disposeLinkRecognizers();
     widget.controller?._detach(this);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    _disposeLinkRecognizers();
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final mobile = MediaQuery.sizeOf(context).width < 600;
@@ -543,6 +886,9 @@ class PEditorState extends State<PEditor> {
       codeMobileToolbarItem,
       linkMobileToolbarItem,
       if (widget.onPickImage != null) _imageMobileToolbarItem(),
+      if (widget.onPickLink != null) _noteLinkMobileToolbarItem(),
+      if (!widget.readOnly) _codeBlockMobileToolbarItem(),
+      if (!widget.readOnly) _tableMobileToolbarItem(),
     ];
   }
 
@@ -582,6 +928,7 @@ class PEditorState extends State<PEditor> {
         dragHandleColor: scheme.primary,
         selectionColor: scheme.primary.withValues(alpha: 0.30),
         textStyleConfiguration: config,
+        textSpanDecorator: _decorateSpan,
       );
     }
     return EditorStyle.desktop(
@@ -589,6 +936,7 @@ class PEditorState extends State<PEditor> {
       cursorColor: scheme.primary,
       selectionColor: scheme.primary.withValues(alpha: 0.30),
       textStyleConfiguration: config,
+      textSpanDecorator: _decorateSpan,
     );
   }
 }

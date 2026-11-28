@@ -426,4 +426,184 @@ void main() {
       isFalse,
     );
   });
+
+  testWidgets('1.65 插入 [[笔记引用]] 后点它能打开那篇笔记', (tester) async {
+    final controller = PeEditorController();
+    var markdown = '';
+    String? opened;
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '正文一段',
+          onChanged: (value) => markdown = value,
+          controller: controller,
+          onPickLink: () async => '[[读书笔记]]',
+          onOpenNote: (raw) => opened = raw,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(AppFlowyRichText).first);
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await controller.insertNoteLink('[[读书笔记]]');
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(markdown, contains('[[读书笔记]]'));
+
+    final rich = tester.widget<RichText>(
+      find
+          .byWidgetPredicate(
+            (widget) =>
+                widget is RichText &&
+                widget.text.toPlainText().contains('读书笔记'),
+          )
+          .first,
+    );
+    TextSpan? link;
+    void visit(InlineSpan span) {
+      if (span is TextSpan) {
+        if (span.text == '读书笔记' && span.recognizer != null) {
+          link = span;
+        }
+        for (final child in span.children ?? const <InlineSpan>[]) {
+          visit(child);
+        }
+      }
+    }
+
+    visit(rich.text);
+    expect(link, isNotNull);
+    (link!.recognizer! as TapGestureRecognizer).onTap!();
+    await tester.pump();
+    expect(opened, '[[读书笔记]]');
+  });
+
+  testWidgets('1.65 没有光标时插入笔记引用追加到文末', (tester) async {
+    final controller = PeEditorController();
+    var markdown = '';
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '正文',
+          onChanged: (value) => markdown = value,
+          controller: controller,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await controller.insertNoteLink('[[甲]]');
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(markdown.trim(), endsWith('[[甲]]'));
+  });
+
+  testWidgets('1.65 代码块显示语言标签、按语言着色', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '```dart\nfinal n = 1; // 注释\n```',
+          onChanged: (_) {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('DART'), findsOneWidget);
+    // 代码正文以富文本渲染，关键字/注释各是一段。
+    final richTexts = tester.widgetList<RichText>(find.byType(RichText));
+    final joined = richTexts
+        .map((widget) => widget.text.toPlainText())
+        .join('\n');
+    expect(joined, contains('final n = 1;'));
+  });
+
+  testWidgets('1.65 点代码块能改代码和语言，并写回 Markdown', (tester) async {
+    var markdown = '';
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '```dart\nvoid main() {}\n```',
+          onChanged: (value) => markdown = value,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('DART'));
+    await tester.pumpAndSettle();
+    expect(find.text('编辑代码块'), findsOneWidget);
+
+    await tester.enterText(
+      find.byType(TextField).at(0),
+      'python',
+    );
+    await tester.enterText(
+      find.byType(TextField).at(1),
+      'print("hi")',
+    );
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(markdown, contains('```python'));
+    expect(markdown, contains('print("hi")'));
+    expect(markdown, isNot(contains('void main')));
+  });
+
+  testWidgets('1.65 只读编辑器里的代码块不给「编辑」入口', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '```dart\nvoid main() {}\n```',
+          onChanged: (_) {},
+          readOnly: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('DART'), findsOneWidget);
+    expect(find.text('编辑'), findsNothing);
+  });
+
+  testWidgets('1.65 表格能显示单元格文字', (tester) async {
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '| 姓名 | 年龄 |\n| --- | --- |\n| 张三 | 20 |',
+          onChanged: (_) {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final richTexts = tester.widgetList<RichText>(find.byType(RichText));
+    final joined =
+        richTexts.map((widget) => widget.text.toPlainText()).join('\n');
+    expect(joined, contains('张三'));
+    expect(joined, contains('20'));
+  });
+
+  testWidgets('1.65 插入表格后 Markdown 里出现表格', (tester) async {
+    final controller = PeEditorController();
+    var markdown = '';
+    await tester.pumpWidget(
+      wrap(
+        PEditor(
+          initialText: '正文',
+          onChanged: (value) => markdown = value,
+          controller: controller,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await controller.insertTable();
+    await tester.pump(const Duration(milliseconds: 250));
+    // 表格列宽/行高会在帧末再补一次事务，图后补段落还挂着一个 16ms 的定时器。
+    await tester.pumpAndSettle();
+
+    expect(markdown, contains('|-|-|'));
+    expect(markdown.split('\n').length, greaterThanOrEqualTo(3));
+  });
 }

@@ -435,13 +435,13 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
   }
 
   Future<void> _insertLink() async {
-    if (editorKernel.value == kEditorKernelPe) {
-      _showMessage('新编辑器内核暂不支持插入笔记链接，先切回旧内核再用');
-      return;
-    }
     final snippet = await _pickLinkSnippet();
     if (snippet == null || !mounted) return;
-    _blockKey.currentState?.insertSnippet(snippet);
+    if (editorKernel.value == kEditorKernelPe) {
+      await _peController.insertNoteLink(snippet);
+    } else {
+      _blockKey.currentState?.insertSnippet(snippet);
+    }
   }
 
   /// 反向链接（1.43）：谁引用了这篇笔记。点一条直接跳过去。
@@ -782,6 +782,8 @@ class _NoteEditorPageState extends State<NoteEditorPage> {
         onPasteImage: () => Pasteboard.image,
         onImportImageBytes: _importAssetBytes,
         onDropImage: _importAssetFromPath,
+        onPickLink: _pickLinkSnippet,
+        onOpenNote: _openRef,
       );
     }
     // 1.57：块状编辑器。每个段落是一个块，标题/列表/待办/图片直接在原位排版。

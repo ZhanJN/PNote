@@ -1,6 +1,6 @@
 # 架构
 
-> 版本 1.65.0 · 协议 `pnote-sync/8` · 数据库 schema 6
+> 版本 1.65.2 · 协议 `pnote-sync/8` · 数据库 schema 6
 
 ## 账号（同步分组，1.51）
 
@@ -56,7 +56,7 @@ platform/    平台能力：通知、路径、设备名
 - 同步状态：`.sync.json` 存每个文件的 `{hlc, sha, size}` 与彻底删除记录；`.purge.json` 是「文件层 → 同步层」的暂存队列（文件层不知道 HLC 的细节）。
 - 附件：单文件 ≤ 32 MB 才同步，按 1 MB 分块走 base64 帧。
 - 编辑器（legacy，默认）：`markdown_blocks.dart` 把正文解析成 13 种块，`block_editor.dart` 每块一个 TextField（所以跨段操作靠整段框选）；预览仍用 AST。
-- 编辑器（PEditor，1.64 起实验）：appflowy_editor 6.2.0 的 fork 在 `third_party/appflowy_editor`；`lib/notes/pe_markdown.dart` 做 Markdown⇄Document，`lib/ui/notes/pe_editor.dart` 做输入与 120 ms 防抖保存；设置项 `editor_kernel` 在 legacy / pe 之间切换，默认 legacy。
+- 编辑器（PEditor，1.64 起实验）：appflowy_editor 6.2.0 的 fork 在 `third_party/appflowy_editor`；`lib/notes/pe_markdown.dart` 做 Markdown⇄Document，`lib/ui/notes/pe_editor.dart` 做输入与 120 ms 防抖保存；设置项 `editor_kernel` 在 legacy / pe 之间切换，默认 legacy。1.65.2 起的补充：`lib/notes/pe_code_block.dart` 把围栏解析成原生 `code` 块，`lib/notes/pnote_code_highlight.dart` 手写语法着色，`lib/ui/notes/pnote_code_block.dart` 是带语言标签与编辑弹窗的块组件；`[[名字]]` 与 `[名字](pnote:note:…)` 在内存里互转，磁盘仍写 `[[名字]]`。
 
 ## 关键不变量
 

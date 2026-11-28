@@ -1,5 +1,7 @@
+import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:pnote/notes/pe_code_block.dart';
 import 'package:pnote/notes/pe_markdown.dart';
 
 void main() {
@@ -104,6 +106,130 @@ void main() {
       expect(out, contains('正文'));
       expect(out, contains('![[图.png]]'));
       expect(out, contains('[[另一篇]]'));
+    });
+  });
+
+  group('PEditor 笔记引用（1.65，不做数据迁移）', () {
+    List<String> noteHrefs(Document document) {
+      final hrefs = <String>[];
+      void visit(Node node) {
+        final delta = node.delta;
+        if (delta != null) {
+          for (final operation in delta) {
+            if (operation is TextInsert) {
+              final href = operation.attributes?[AppFlowyRichTextKeys.href];
+              if (href is String) hrefs.add(href);
+            }
+          }
+        }
+        for (final child in node.children) {
+          visit(child);
+        }
+      }
+
+      visit(document.root);
+      return hrefs;
+    }
+
+    test('行内的 [[名字]] 变成链接，导出仍写 [[名字]]', () {
+      const source = '引用一下 [[买菜清单]] 和 [[读书#要点]]。';
+      final doc = peDocumentFromMarkdown(source);
+      final hrefs = noteHrefs(doc);
+      expect(hrefs, hasLength(2));
+      expect(hrefs.first, startsWith(kPnoteNoteScheme));
+      expect(peMarkdownFromDocument(doc), source);
+    });
+
+    test('单独成行的 [[名字]] 往返不丢', () {
+      const source = '[[读书笔记]]';
+      final doc = peDocumentFromMarkdown(source);
+      expect(noteHrefs(doc), hasLength(1));
+      expect(peMarkdownFromDocument(doc), source);
+    });
+
+    test('普通网页链接保持原样', () {
+      const source = '看 [官网](https://example.com) 就行';
+      final doc = peDocumentFromMarkdown(source);
+      final out = peMarkdownFromDocument(doc);
+      expect(out, contains('https://example.com'));
+      expect(out, contains('官网'));
+      expect(out, isNot(contains(kPnoteNoteScheme)));
+    });
+
+    test('peNoteRefRaw 与 peNoteRefHref 互转', () {
+      final href = peNoteRefHref('[[读书#要点]]');
+      expect(href, startsWith(kPnoteNoteScheme));
+      expect(peNoteRefRaw(href), '[[读书#要点]]');
+      expect(peNoteRefRaw('https://example.com'), isNull);
+    });
+  });
+
+  group('PEditor 代码块（1.65，不做数据迁移）', () {
+    test('围栏代码解析成代码块节点，带语言，导出与原串一致', () {
+      const source = '```dart\nvoid main() {\n  print("hi");\n}\n```';
+      final doc = peDocumentFromMarkdown(source);
+      final node = doc.root.children.first;
+      expect(node.type, PnoteCodeBlockKeys.type);
+      expect(pnoteCodeLanguage(node), 'dart');
+      expect(pnoteCodeText(node), 'void main() {\n  print("hi");\n}');
+      expect(peMarkdownFromDocument(doc), source);
+    });
+
+    test('没有语言的围栏也能往返', () {
+      const source = '```\nplain text\nline 2\n```';
+      final doc = peDocumentFromMarkdown(source);
+      final node = doc.root.children.first;
+      expect(node.type, PnoteCodeBlockKeys.type);
+      expect(pnoteCodeLanguage(node), '');
+      expect(peMarkdownFromDocument(doc), source);
+    });
+
+    test('围栏里的 ![[图.png]] 与 [[引用]] 不被当成图片/笔记引用改写', () {
+      const source = '```text\n![[图.png]]\n[[引用]]\n[x](pnote:note:abc)\n```';
+      final doc = peDocumentFromMarkdown(source);
+      final node = doc.root.children.first;
+      expect(pnoteCodeText(node), contains('![[图.png]]'));
+      expect(pnoteCodeText(node), contains('[[引用]]'));
+      final out = peMarkdownFromDocument(doc);
+      expect(out, source);
+    });
+
+    test('代码块前后的普通段落照旧', () {
+      const source = '前一段\n\n```python\nprint(1)\n```\n\n后一段';
+      final doc = peDocumentFromMarkdown(source);
+      expect(doc.root.children.length, 3);
+      expect(doc.root.children[1].type, PnoteCodeBlockKeys.type);
+      final out = peMarkdownFromDocument(doc);
+      expect(out, contains('前一段'));
+      expect(out, contains('```python'));
+      expect(out, contains('print(1)'));
+      expect(out, contains('后一段'));
+    });
+  });
+
+  group('PEditor 表格（1.65，不做数据迁移）', () {
+    test('管道表格解析成 table 节点，单元格文字与导出都保留', () {
+      const source = '| 姓名 | 年龄 |\n| --- | --- |\n| 张三 | 20 |\n| 李四 | 30 |';
+      final doc = peDocumentFromMarkdown(source);
+      final node = doc.root.children.first;
+      expect(node.type, TableBlockKeys.type);
+      expect(node.attributes[TableBlockKeys.colsLen], 2);
+      // 上游把表头也当成普通的一行数据：表头 + 2 行正文 = 3 行。
+      expect(node.attributes[TableBlockKeys.rowsLen], 3);
+      expect(node.children.length, 6);
+      final out = peMarkdownFromDocument(doc);
+      expect(out, contains('姓名'));
+      expect(out, contains('张三'));
+      expect(out, contains('李四'));
+      expect(out, contains('|-|-|'));
+    });
+
+    test('表格里的 [[引用]] 不被改写，导出仍是原文', () {
+      const source = '| 笔记 | 备注 |\n| --- | --- |\n| [[读书]] | 好 |';
+      final doc = peDocumentFromMarkdown(source);
+      final out = peMarkdownFromDocument(doc);
+      expect(out, contains('[[读书]]'));
+      expect(out, isNot(contains(kPnoteNoteScheme)));
     });
   });
 }
