@@ -384,136 +384,217 @@ class BlockEditorState extends State<BlockEditor> {
   }
 
   /// 工具条开关：已经是这个格式就取消，否则加上；不会叠第二层标记。
+  /// 1.63.2：加/去标记后把选区放回正文，而不是跳到块尾——否则看起来
+  /// 像「App 的逻辑光标」和「屏幕上闪的光标」分了家，还得再点一次。
   void _toggleWrap(String open, String close) {
     final index = _lastFocused.clamp(0, _entries.length - 1);
     final entry = _entries[index];
-    final value = entry.controller.value;
-    final text = value.text;
-    final selection = _effectiveSelection(entry);
-    final start = selection.isValid ? selection.start : text.length;
-    final end = selection.isValid ? selection.end : text.length;
-
-    // 1.61：没有选区时，格式作用于整块；空块直接不动。
+    final text = entry.controller.text;
     if (text.trim().isEmpty) return;
+    final selection = _effectiveSelection(entry);
+    final hasSel = selection.isValid && !selection.isCollapsed;
+    final start = hasSel ? selection.start : 0;
+    final end = hasSel ? selection.end : text.length;
 
-    String next;
-    int caret;
-    if (start == end) {
-      // 整块只有一层标记 → 再点一次整对去掉；否则整块包起来。
+    if (!hasSel) {
+      final caret = selection.isValid ? selection.start : text.length;
       if (text.length >= open.length + close.length &&
           text.startsWith(open) &&
           text.endsWith(close)) {
         final inner = text.substring(open.length, text.length - close.length);
         if (!inner.contains(open) && !inner.contains(close)) {
-          next = inner;
-          caret = inner.length;
-          entry.controller.value = TextEditingValue(
-            text: next,
-            selection: TextSelection.collapsed(offset: caret),
+          final next = caret - open.length;
+          _commitSel(
+            entry,
+            inner,
+            TextSelection.collapsed(offset: next.clamp(0, inner.length)),
           );
-          entry.block.text = next;
-          entry.lastText = next;
-          entry.savedSelection = null;
-          entry.focus.requestFocus();
-          _notify();
           return;
         }
       }
-      next = '$open$text$close';
-      caret = text.length + open.length;
-    } else {
-      final selected = text.substring(start, end);
-      final wrapped = selected.length >= open.length + close.length &&
-          selected.startsWith(open) &&
-          selected.endsWith(close);
-      final surrounded = start >= open.length &&
-          end + close.length <= text.length &&
-          text.substring(start - open.length, start) == open &&
-          text.substring(end, end + close.length) == close;
-      if (wrapped) {
-        next = text.replaceRange(
-          start,
-          end,
-          selected.substring(open.length, selected.length - close.length),
-        );
-        caret = start + selected.length - open.length - close.length;
-      } else if (surrounded) {
-        next = text.replaceRange(start - open.length, end + close.length, selected);
-        caret = start - open.length + selected.length;
-      } else {
-        next = text.replaceRange(start, end, '$open$selected$close');
-        caret = start + open.length + selected.length;
-      }
+      final next = '$open$text$close';
+      _commitSel(
+        entry,
+        next,
+        TextSelection.collapsed(
+          offset: (caret + open.length).clamp(0, next.length),
+        ),
+      );
+      return;
     }
-    entry.controller.value = TextEditingValue(
-      text: next,
-      selection: TextSelection.collapsed(offset: caret),
-    );
-    entry.block.text = next;
-    entry.lastText = next;
-    entry.savedSelection = null;
-    entry.focus.requestFocus();
-    _notify();
+
+    final selected = text.substring(start, end);
+    final wrapped = selected.length >= open.length + close.length &&
+        selected.startsWith(open) &&
+        selected.endsWith(close);
+    final surrounded = start >= open.length &&
+        end + close.length <= text.length &&
+        text.substring(start - open.length, start) == open &&
+        text.substring(end, end + close.length) == close;
+    if (wrapped) {
+      final inner = selected.substring(open.length, selected.length - close.length);
+      final next = text.replaceRange(start, end, inner);
+      _commitSel(
+        entry,
+        next,
+        TextSelection(baseOffset: start, extentOffset: start + inner.length),
+      );
+    } else if (surrounded) {
+      final next =
+          text.replaceRange(start - open.length, end + close.length, selected);
+      final s = start - open.length;
+      _commitSel(
+        entry,
+        next,
+        TextSelection(baseOffset: s, extentOffset: s + selected.length),
+      );
+    } else {
+      final next = text.replaceRange(start, end, '$open$selected$close');
+      final s = start + open.length;
+      _commitSel(
+        entry,
+        next,
+        TextSelection(baseOffset: s, extentOffset: s + selected.length),
+      );
+    }
   }
 
   static final RegExp _hlPattern =
       RegExp(r'==\{([yrgbp])\}([^\n]*?)==|==([^\n]*?)==');
 
-  /// 1.63.1：高亮是「有/无」开关，颜色只决定新加时的底色。
-  /// 选中/光标已经落在某个高亮里（不论颜色）→ 去掉那层；否则包上。
+  /// 1.63.2：高亮按「选区是否已经全部上色」判断，不按层叠加。
+  /// - 选区里只要有一段没上色 → 整段上所选颜色（原来的颜色被覆盖）；
+  /// - 选区已经全部上色（可能混着不同颜色）→ 整段取消颜色；
+  /// - 没有选区时，把整块当作选区。
   void _toggleHighlight(String code) {
     if (_entries.isEmpty) return;
-    final index = _lastFocused.clamp(0, _entries.length - 1);
-    final entry = _entries[index];
+    final entry = _entries[_lastFocused.clamp(0, _entries.length - 1)];
     final text = entry.controller.text;
     if (text.trim().isEmpty) return;
-    final sel = _effectiveSelection(entry);
-    final collapsed = !sel.isValid || sel.isCollapsed;
-    final caret = collapsed ? (sel.isValid ? sel.start : text.length) : sel.start;
-
-    for (final m in _hlPattern.allMatches(text)) {
-      final colored = m.group(1) != null;
-      final openLen = colored ? 5 : 2;
-      final bodyStart = m.start + openLen;
-      final bodyEnd = m.end - 2;
-      final inside = collapsed
-          ? (caret >= bodyStart && caret <= bodyEnd)
-          : (sel.start >= bodyStart && sel.end <= bodyEnd);
-      if (!inside) continue;
-      final inner = text.substring(bodyStart, bodyEnd);
-      final removed = (m.end - m.start) - inner.length;
-      final next = text.replaceRange(m.start, m.end, inner);
-      _commit(entry, next, caret > m.start ? caret - removed : caret);
-      return;
-    }
-
-    final open = code == 'y' ? '==' : '=={$code}';
-    const close = '==';
-    // 整块只有一层高亮（光标可能在边界、没被上面的区间匹配到）→ 再点一次去掉。
-    final whole = RegExp(r'^==(\{[yrgbp]\})?([^\n]*?)==$').firstMatch(text);
-    if (whole != null) {
-      final body = whole.group(2) ?? '';
-      if (!body.contains('==') && body.isNotEmpty) {
-        _commit(entry, body, body.length);
-        return;
-      }
-    }
-    if (collapsed) {
-      _commit(entry, '$open$text$close', text.length + open.length);
-    } else {
-      final selected = text.substring(sel.start, sel.end);
-      _commit(
-        entry,
-        text.replaceRange(sel.start, sel.end, '$open$selected$close'),
-        sel.start + open.length + selected.length,
-      );
-    }
+    final selection = _effectiveSelection(entry);
+    final hasSel = selection.isValid && !selection.isCollapsed;
+    final start = hasSel ? selection.start : 0;
+    final end = hasSel ? selection.end : text.length;
+    if (end <= start) return;
+    final plan = _highlightPlan(text, start, end, code);
+    _commitSel(entry, plan.$1, plan.$2);
   }
 
-  void _commit(_BlockEntry entry, String next, int caret) {
+  /// 返回（新文本, 新选区）。标记字符不参与「是否上色」的判断。
+  (String, TextSelection) _highlightPlan(
+    String text,
+    int start,
+    int end,
+    String code,
+  ) {
+    final markers = <int>{};
+    final owner = <int, String>{};
+    for (final m in _hlPattern.allMatches(text)) {
+      final color = m.group(1) ?? 'y';
+      final openLen = m.group(1) == null ? 2 : 5;
+      final bodyStart = m.start + openLen;
+      final bodyEnd = m.end - 2;
+      for (var i = m.start; i < bodyStart; i++) {
+        markers.add(i);
+      }
+      for (var i = bodyEnd; i < m.end; i++) {
+        markers.add(i);
+      }
+      for (var i = bodyStart; i < bodyEnd; i++) {
+        owner[i] = color;
+      }
+    }
+
+    var covered = true;
+    final colors = <String>{};
+    final plain = StringBuffer();
+    for (var i = start; i < end; i++) {
+      if (markers.contains(i)) continue;
+      plain.write(text[i]);
+      final color = owner[i];
+      if (color == null) {
+        covered = false;
+      } else {
+        colors.add(color);
+      }
+    }
+    if (plain.isEmpty) {
+      return (text, TextSelection.collapsed(offset: start));
+    }
+    final head = _keepHighlights(text, 0, start, markers, owner);
+    final tail = _keepHighlights(text, end, text.length, markers, owner);
+
+    // 全部上色、而且就是这次点的颜色 → 取消；否则用所选颜色覆盖。
+    // 混着两种以上颜色也按「覆盖」处理，不会越叠越多。
+    final sameColor = covered && colors.length == 1 && colors.first == code;
+    if (sameColor) {
+      final next = '$head$plain$tail';
+      return (
+        next,
+        TextSelection(
+          baseOffset: head.length,
+          extentOffset: head.length + plain.length,
+        ),
+      );
+    }
+    final open = code == 'y' ? '==' : '=={$code}';
+    final next = '$head$open$plain==$tail';
+    final s = head.length + open.length;
+    return (
+      next,
+      TextSelection(baseOffset: s, extentOffset: s + plain.length),
+    );
+  }
+
+  /// 保留区间里原有的高亮（跳过标记字符）；跨边界的着色在边界处收口，
+  /// 这样只改选中范围，不会把整块其它颜色的高亮一起抹掉。
+  String _keepHighlights(
+    String text,
+    int from,
+    int to,
+    Set<int> markers,
+    Map<int, String> owner,
+  ) {
+    final out = StringBuffer();
+    final run = StringBuffer();
+    String? runColor;
+
+    void flush() {
+      if (run.isEmpty) return;
+      final color = runColor ?? 'y';
+      out.write(color == 'y' ? '==' : '=={$color}');
+      out.write(run);
+      out.write('==');
+      run.clear();
+      runColor = null;
+    }
+
+    for (var i = from; i < to; i++) {
+      if (markers.contains(i)) continue;
+      final color = owner[i];
+      if (color == null) {
+        flush();
+        out.write(text[i]);
+      } else if (runColor == color) {
+        run.write(text[i]);
+      } else {
+        flush();
+        runColor = color;
+        run.write(text[i]);
+      }
+    }
+    flush();
+    return out.toString();
+  }
+
+  /// 1.63.2：一次提交同时给定文本和选区。
+  /// 以前只给一个折叠光标，工具条操作后光标会跳到块尾，看起来像
+  /// 「App 的逻辑光标」和「屏幕上闪的系统光标」分了家；这里让选区
+  /// 跟着文本走（加标记就选中标记内的正文，去标记就选中原文）。
+  void _commitSel(_BlockEntry entry, String next, TextSelection selection) {
     entry.controller.value = TextEditingValue(
       text: next,
-      selection: TextSelection.collapsed(offset: caret.clamp(0, next.length)),
+      selection: selection,
     );
     entry.block.text = next;
     entry.lastText = next;
@@ -929,9 +1010,16 @@ class BlockEditorState extends State<BlockEditor> {
     _longPress?.cancel();
     _longPress = null;
     _downAt = null;
+    if (_blockSelecting) {
+      _stopEdgeScroll();
+      return;
+    }
+    // 1.63.2：普通点击（聚焦、放光标、选字）不重建整棵块列表。
+    // 以前每次抬指都 setState 清锚点，TextField 自己的 tap 会被打断，
+    // 表现就是「第一次点光标不跟手，要再点一次」。
+    _selAnchor = null;
+    _selFocus = null;
     _stopEdgeScroll();
-    if (_blockSelecting) return;
-    _clearBlockSelection();
   }
 
   void _clearBlockSelection() {

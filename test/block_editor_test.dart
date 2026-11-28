@@ -517,9 +517,20 @@ void main() {
     expect(clip, contains('甲'));
     expect(clip, contains('乙'));
   });
-  testWidgets('1.63.1 光标在彩色高亮里再点高亮会整层去掉', (tester) async {
+  testWidgets('1.63.2 已有颜色换成另一种颜色 = 覆盖，不叠层', (tester) async {
     last = '';
     await tester.pumpWidget(wrap('=={r}重点=='));
+    await tester.pump();
+    await tester.tap(find.byType(TextField).first);
+    await tester.pump();
+    await tester.tap(find.byTooltip('高亮'));
+    await tester.pump();
+    expect(last, '==重点==');
+  });
+
+  testWidgets('1.63.2 同一种颜色再点一次 = 取消高亮', (tester) async {
+    last = '';
+    await tester.pumpWidget(wrap('==重点=='));
     await tester.pump();
     await tester.tap(find.byType(TextField).first);
     await tester.pump();
@@ -600,6 +611,57 @@ void main() {
     await tester.pump();
 
     expect(last, '==重==点内容');
+  });
+  testWidgets('1.63.2 混合颜色整块点高亮 = 全部变黄，再点 = 取消', (tester) async {
+    last = '';
+    await tester.pumpWidget(wrap('=={r}甲====乙==丙'));
+    await tester.pump();
+
+    final field = tester.widget<TextField>(find.byType(TextField).first);
+    field.controller!.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('高亮'));
+    await tester.pump();
+    expect(last, '==甲乙丙==');
+
+    field.controller!.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pump();
+    await tester.tap(find.byTooltip('高亮'));
+    await tester.pump();
+    expect(last, '甲乙丙');
+  });
+
+  testWidgets('1.63.2 只给选中的未上色部分上色，其它颜色保持', (tester) async {
+    last = '';
+    await tester.pumpWidget(wrap('=={r}甲==乙=={g}丙=='));
+    await tester.pump();
+
+    final field = tester.widget<TextField>(find.byType(TextField).first);
+    field.controller!.selection =
+        const TextSelection(baseOffset: 8, extentOffset: 9);
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('高亮'));
+    await tester.pump();
+
+    expect(last, '=={r}甲====乙===={g}丙==');
+  });
+
+  testWidgets('1.63.2 加粗后光标停在原位置，不跳到块尾', (tester) async {
+    last = '';
+    await tester.pumpWidget(wrap('甲乙丙'));
+    await tester.pump();
+
+    final field = tester.widget<TextField>(find.byType(TextField).first);
+    field.controller!.selection = const TextSelection.collapsed(offset: 1);
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('加粗'));
+    await tester.pump();
+
+    expect(last, '**甲乙丙**');
+    expect(field.controller!.selection.baseOffset, 3);
   });
 }
 

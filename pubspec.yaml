@@ -1,7 +1,7 @@
 name: pnote
 description: "PNote - 纯局域网 P2P 同步的极简待办与笔记"
 publish_to: 'none'
-version: 1.63.1+16301
+version: 1.63.2+16302
 
 environment:
   sdk: ^3.14.0
