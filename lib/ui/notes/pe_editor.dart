@@ -125,7 +125,10 @@ class PEditorState extends State<PEditor> {
     );
     final surface = ColoredBox(
       color: theme.scaffoldBackgroundColor,
-      child: editor,
+      child: DefaultTextStyle.merge(
+        style: TextStyle(color: scheme.onSurface, fontFamily: 'NotoSansSC'),
+        child: editor,
+      ),
     );
 
     if (!mobile) {

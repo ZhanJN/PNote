@@ -164,7 +164,7 @@ class SettingsPage extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.info_outline),
             title: const Text('PNote'),
-            subtitle: const Text('纯局域网同步的待办与笔记'),
+            subtitle: const Text('纯局域网同步的待办与笔记 · v1.64.2 (16402)'),
           ),
           ListTile(
             leading: const Icon(Icons.devices_outlined),
