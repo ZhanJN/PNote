@@ -24,7 +24,7 @@ Document peDocumentFromMarkdown(
   Document document;
   try {
     document = markdownToDocument(
-      _encodeImageRefs(source),
+      _protectIndentedParagraphs(_encodeImageRefs(source)),
       markdownParsers: const [PeCodeBlockParser()],
     );
   } catch (_) {
@@ -52,7 +52,83 @@ String peMarkdownFromDocument(Document document) {
         .join('\n')
         .trimRight();
   }
-  return renumberOrderedLists(_decodeImageRefs(_decodeNoteRefs(text)));
+  return renumberOrderedLists(
+    _ensureBlockSpacing(
+      _restoreIndentedParagraphs(_decodeImageRefs(_decodeNoteRefs(text))),
+    ),
+  );
+}
+
+/// 上游 encoder 各块之间只拼一个 `\n`，Markdown 里的空行会被吃掉——用户打开
+/// 再保存一次，段落就全挤在一起了。这里在导出时把「块与块之间」的空行补回来：
+/// 只在**普通段落 / 标题**这类「散行」前补空行，列表、表格、引用、围栏内部的
+/// 行保持紧凑，避免把结构改坏。
+final RegExp _structuralLine = RegExp(
+  r'^[ \t]*(?:[-*+][ \t]|\d+[.)][ \t]|>|\||```)',
+);
+
+String _ensureBlockSpacing(String markdown) {
+  if (markdown.trim().isEmpty) {
+    return markdown;
+  }
+  final lines = markdown.split('\n');
+  final out = <String>[];
+  var inFence = false;
+  for (var i = 0; i < lines.length; i++) {
+    final line = lines[i];
+    final isFence = line.trimLeft().startsWith('```');
+    final inFenceBefore = inFence;
+    if (isFence) {
+      inFence = !inFence;
+    }
+    final structural = inFenceBefore ||
+        isFence ||
+        line.trim().isEmpty ||
+        _structuralLine.hasMatch(line);
+    if (i > 0 && out.isNotEmpty && out.last.trim().isNotEmpty && !structural) {
+      out.add('');
+    }
+    out.add(line);
+  }
+  return out.join('\n');
+}
+
+/// 中文笔记里很常见「首行缩进四个空格」——按 CommonMark 那是**缩进代码块**，
+/// 上游会把整段解析成 code 节点：块里不能输入、回车没反应、导出还会变成
+/// ``` 围栏（等于改坏用户的文件）。这里在解析前把行首的 4+ 空格 / 制表符
+/// 换成 U+00A0（不换行空格，宽度和样子都一样），导出时再换回空格。
+final RegExp _leadingIndent = RegExp(r'^(?: {4,}|\t+)');
+
+String _protectIndentedParagraphs(String markdown) {
+  return _mapOutsideCodeFences(markdown, (line) {
+    final match = _leadingIndent.firstMatch(line);
+    if (match == null) {
+      return line;
+    }
+    final indent = match.group(0)!;
+    final protected = StringBuffer();
+    for (final unit in indent.split('')) {
+      protected.write(unit == '\t' ? '    ' : ' ');
+    }
+    return protected.toString().replaceAll(' ', '\u00A0') +
+        line.substring(indent.length);
+  });
+}
+
+final RegExp _restoreIndent = RegExp(r'^\u00A0+');
+
+String _restoreIndentedParagraphs(String markdown) {
+  return markdown
+      .split('\n')
+      .map((line) {
+        final match = _restoreIndent.firstMatch(line);
+        if (match == null) {
+          return line;
+        }
+        return match.group(0)!.replaceAll('\u00A0', ' ') +
+            line.substring(match.end);
+      })
+      .join('\n');
 }
 
 final RegExp _orderedItem = RegExp(r'^(\s*)1\.\s');
@@ -87,19 +163,11 @@ String renumberOrderedLists(String markdown) {
   return out.join('\n');
 }
 
-/// 旧内核的图片引用写法：`![[素材名]]`。
-///
-/// 只认独立成行的那种：行内 `![[名]]` 上游解析不成图片节点，硬转反而会
-/// 丢字，所以留成普通文字（旧内核也只把独立成行的当图片）。
-final RegExp _imageRefPattern = RegExp(
-  r'^[ \t]*!\[\[([^\]\n]*)\]\][ \t\r]*$',
-  multiLine: true,
-);
-
 /// 编辑器内存里用的临时地址前缀，不会写进 Markdown 文件。
 const String kPnoteImageScheme = 'pnote:';
 
 final RegExp _imageMarkdownPattern = RegExp(r'!\[[^\]\n]*\]\(([^()\n]*)\)');
+final RegExp _inlineImageRefPattern = RegExp(r'!\[\[([^\[\]\n]*)\]\]');
 final RegExp _absolutePathPattern = RegExp(r'^(?:[A-Za-z]:[\\/]|/)');
 final RegExp _schemePattern = RegExp(r'^[A-Za-z][A-Za-z0-9+.\-]*:');
 
@@ -123,19 +191,41 @@ String _mapOutsideCodeFences(
 }
 
 /// 把 `![[素材名]]` 临时改写成上游能解析的 `![](pnote:素材名)`。
+///
+/// 1.65.3：原来只认「独立成行」的写法，真实笔记里常见
+/// `![[照片.png]]接着写正文`（图片和正文粘在同一行，1.64 的编辑器写出来就
+/// 是这样）。这种行上游解析不成图片，还会被后面的 `[[…]]` 笔记引用规则
+/// 吃掉一半。现在统一拆成「图片单独一行 + 其余文字各自成行」。
 String _encodeImageRefs(String markdown) {
   return _mapOutsideCodeFences(markdown, (line) {
-    return line.replaceAllMapped(_imageRefPattern, (match) {
+    if (!line.contains('![[')) return line;
+    final out = <String>[];
+    var last = 0;
+    for (final match in _inlineImageRefPattern.allMatches(line)) {
+      final before = line.substring(last, match.start).trim();
       final name = match.group(1)!.trim();
-      if (name.isEmpty) {
-        return match.group(0)!;
+      if (before.isNotEmpty) out.add(before);
+      if (name.isNotEmpty) {
+        out.add('![]($kPnoteImageScheme${Uri.encodeComponent(name)})');
+      } else {
+        out.add(match.group(0)!);
       }
-      return '![]($kPnoteImageScheme${Uri.encodeComponent(name)})';
-    });
+      last = match.end;
+    }
+    final rest = line.substring(last).trim();
+    if (rest.isNotEmpty) out.add(rest);
+    // 图片必须自成一个「块」（空行隔开），否则上游会把整段当成一个 paragraph，
+    // 行内图片节点被丢掉（正文里只剩换行）。
+    return out.join('\n\n');
   });
 }
 
 /// 把图片节点的临时地址换成素材的绝对路径，供 `Image.file` 渲染。
+///
+/// 地址可能是三种：`pnote:素材名`（我们改写出来的）、绝对路径（刚插进来的
+/// 图）、裸素材名（1.64 的编辑器写出来的 `![图片](照片.png)`）——三种都要
+/// 能解析成磁盘上的绝对路径，否则 `Image.file` 会拿相对路径去找，图片就
+/// 永远显示不出来。
 void _applyImagePaths(
   Document document,
   String? Function(String name) resolveImage,
@@ -143,13 +233,14 @@ void _applyImagePaths(
   void visit(Node node) {
     if (node.type == ImageBlockKeys.type) {
       final raw = node.attributes[ImageBlockKeys.url];
-      if (raw is String && raw.startsWith(kPnoteImageScheme)) {
-        final encoded = raw.substring(kPnoteImageScheme.length);
-        final name = _decodeName(encoded);
-        final path = resolveImage(name) ?? resolveImage(encoded);
-        node.updateAttributes({
-          ImageBlockKeys.url: (path == null || path.isEmpty) ? name : path,
-        });
+      if (raw is String && raw.isNotEmpty) {
+        final name = _assetNameOf(raw);
+        if (name != null && name.isNotEmpty) {
+          final path = resolveImage(name);
+          node.updateAttributes({
+            ImageBlockKeys.url: (path == null || path.isEmpty) ? name : path,
+          });
+        }
       }
     }
     for (final child in node.children) {
@@ -161,15 +252,28 @@ void _applyImagePaths(
 }
 
 /// 把上游导出的 `![](绝对路径)` 换回 `![[素材名]]`；网络图片保持原样。
+///
+/// 上游写图片时不会补换行，图片后面紧跟的正文会粘在同一行
+/// （`![](路径)正文`）。这里顺手断开，免得下次打开又被 [_encodeImageRefs]
+/// 拆一次、来回改文件。
 String _decodeImageRefs(String markdown) {
   return _mapOutsideCodeFences(markdown, (line) {
-    return line.replaceAllMapped(_imageMarkdownPattern, (match) {
+    if (!line.contains('](')) return line;
+    final out = StringBuffer();
+    var last = 0;
+    for (final match in _imageMarkdownPattern.allMatches(line)) {
       final name = _assetNameOf(match.group(1)!.trim());
-      if (name == null || name.isEmpty) {
-        return match.group(0)!;
+      if (name == null || name.isEmpty) continue;
+      out.write(line.substring(last, match.start));
+      out.write('![[$name]]');
+      last = match.end;
+      if (last < line.length &&
+          !line.substring(last).startsWith(RegExp(r'[ \t\r]'))) {
+        out.write('\n');
       }
-      return '![[$name]]';
-    });
+    }
+    out.write(line.substring(last));
+    return out.toString();
   });
 }
 

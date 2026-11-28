@@ -2,7 +2,12 @@ import 'package:appflowy_editor/appflowy_editor.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'table_action.dart';
 import 'table_view.dart';
+
+// PNote 1.65.3：把 TableActions 公开出去，手机工具条要用它做
+// 「加行 / 加列 / 删行 / 删列」。只加一行 export，不改上游逻辑。
+export 'table_action.dart' show TableActions;
 
 class TableBlockKeys {
   const TableBlockKeys._();

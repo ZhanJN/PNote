@@ -55,6 +55,25 @@ void main() {
       expect(doc.root.children.length, greaterThan(0));
       expect(peMarkdownFromDocument(doc).trim(), isEmpty);
     });
+
+    test('四个空格缩进的段落不会被当成代码块（中文笔记常见写法）', () {
+      const source = '# 日记\n\n    第一段缩进\n\n    第二段缩进\n';
+      final doc = peDocumentFromMarkdown(source);
+      final types = <String>[];
+      void visit(Node node) {
+        types.add(node.type);
+        for (final child in node.children) {
+          visit(child);
+        }
+      }
+
+      visit(doc.root);
+      expect(types.where((type) => type == 'code'), isEmpty);
+      final out = peMarkdownFromDocument(doc);
+      expect(out, contains('    第一段缩进'));
+      expect(out, contains('    第二段缩进'));
+      expect(out, isNot(contains('```')));
+    });
   });
 
   group('PEditor 图片（1.65，不做数据迁移）', () {
@@ -99,13 +118,34 @@ void main() {
       expect(out, isNot(contains('![[')));
     });
 
-    test('正文中间的 ![[素材名]] 留成文字不丢内容', () {
+    test('正文中间的 ![[素材名]] 拆成图片行，文字不丢', () {
       const source = '正文 ![[图.png]] 和 [[另一篇]]';
-      final doc = peDocumentFromMarkdown(source);
+      final doc = peDocumentFromMarkdown(
+        source,
+        resolveImage: (name) => 'C:\\素材\\$name',
+      );
+      final images = <Node>[];
+      final texts = <String>[];
+      void visit(Node node) {
+        if (node.type == ImageBlockKeys.type) {
+          images.add(node);
+        }
+        final delta = node.delta;
+        if (delta != null) {
+          texts.add(delta.toPlainText());
+        }
+        for (final child in node.children) {
+          visit(child);
+        }
+      }
+
+      visit(doc.root);
+      expect(images, hasLength(1));
+      expect(texts.join('\n'), contains('正文'));
       final out = peMarkdownFromDocument(doc);
-      expect(out, contains('正文'));
       expect(out, contains('![[图.png]]'));
       expect(out, contains('[[另一篇]]'));
+      expect(out, contains('正文'));
     });
   });
 

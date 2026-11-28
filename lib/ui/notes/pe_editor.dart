@@ -170,6 +170,29 @@ class PEditorState extends State<PEditor> {
     );
     _sub = _editorState.transactionStream.listen((_) => _onTransaction());
     widget.controller?._attach(this);
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _registerNewlineInterceptor(),
+    );
+  }
+
+  /// 1.65.3：桌面回车兜底。
+  /// 上游只把回车当「字符」处理（字符快捷键 `'\n'`），一旦这层 IME 通道掉线
+  /// （切过预览/源码、点过工具条或弹窗），键盘上的 Enter 就完全没反应。
+  /// 这里注册一个键盘服务拦截器：引擎发 `performAction(newline)` 时自己插入
+  /// 新段落——上游对该动作的内置实现只打一行日志，等于什么都不做。
+  AppFlowyKeyboardServiceInterceptor? _newlineInterceptor;
+
+  void _registerNewlineInterceptor() {
+    if (!mounted || _newlineInterceptor != null) {
+      return;
+    }
+    final service = _editorState.service.keyboardService;
+    if (service == null) {
+      return;
+    }
+    final interceptor = _NewlineInterceptor(() => widget.readOnly);
+    _newlineInterceptor = interceptor;
+    service.registerInterceptor(interceptor);
   }
 
   void _onTransaction() {
@@ -479,7 +502,7 @@ class PEditorState extends State<PEditor> {
     await insertTable();
   }
 
-  /// 手机工具条上的「表格」按钮。
+  /// 手机工具条上的「表格」按钮：光标在表格里就弹操作面板，否则插一张新表。
   MobileToolbarItem _tableMobileToolbarItem() {
     return MobileToolbarItem.action(
       itemIconBuilder: (context, editorState, service) => Icon(
@@ -488,9 +511,105 @@ class PEditorState extends State<PEditor> {
         color: MobileToolbarTheme.of(context).iconColor,
       ),
       actionHandler: (context, editorState) {
-        unawaited(_insertTable());
+        final inside = _tableUnderSelection(editorState.selection);
+        if (inside != null) {
+          unawaited(_showTableActions(inside));
+        } else {
+          unawaited(_insertTable());
+        }
       },
     );
+  }
+
+  /// 光标所在的表格（不在表格里返回 null）。
+  Node? _tableUnderSelection(Selection? selection) {
+    if (selection == null) {
+      return null;
+    }
+    final path = selection.start.path;
+    if (path.length < 3) {
+      return null;
+    }
+    final node = _editorState.document.nodeAtPath([path.first]);
+    if (node == null || node.type != TableBlockKeys.type) {
+      return null;
+    }
+    return node;
+  }
+
+  Future<void> _showTableActions(Node table) async {
+    final selection = _editorState.selection;
+    if (selection == null) {
+      return;
+    }
+    final path = selection.start.path;
+    final rowsLen = table.attributes[TableBlockKeys.rowsLen] as int? ?? 0;
+    final colsLen = table.attributes[TableBlockKeys.colsLen] as int? ?? 0;
+    final row = path[1].clamp(0, rowsLen <= 0 ? 0 : rowsLen - 1);
+    final col = path[2].clamp(0, colsLen <= 0 ? 0 : colsLen - 1);
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: scheme.surfaceContainerHigh,
+      builder: (sheetContext) {
+        Widget item(String value, IconData icon, String label) {
+          return ListTile(
+            leading: Icon(icon, color: scheme.onSurfaceVariant),
+            title: Text(label),
+            onTap: () => Navigator.of(sheetContext).pop(value),
+          );
+        }
+
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                child: Row(
+                  children: [
+                    Text(
+                      '表格操作',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: scheme.onSurface,
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      '第 ${row + 1} 行 · 第 ${col + 1} 列',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              item('rowAdd', Icons.add_box_outlined, '下面加一行'),
+              item('colAdd', Icons.add_box_outlined, '右边加一列'),
+              if (rowsLen > 1)
+                item('rowDel', Icons.indeterminate_check_box_outlined, '删掉这一行'),
+              if (colsLen > 1)
+                item('colDel', Icons.indeterminate_check_box_outlined, '删掉这一列'),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+    if (action == null || !mounted) {
+      return;
+    }
+    switch (action) {
+      case 'rowAdd':
+        TableActions.add(table, row + 1, _editorState, TableDirection.row);
+      case 'colAdd':
+        TableActions.add(table, col + 1, _editorState, TableDirection.col);
+      case 'rowDel':
+        TableActions.delete(table, row, _editorState, TableDirection.row);
+      case 'colDel':
+        TableActions.delete(table, col, _editorState, TableDirection.col);
+    }
   }
 
   /// 1.65：`/` 菜单里的「代码块」——插入一个空代码块，点它就能写代码。
@@ -733,10 +852,9 @@ class PEditorState extends State<PEditor> {
   }
 
   List<CommandShortcutEvent>? _commandShortcuts() {
-    if (widget.onPasteImage == null ||
-        widget.onImportImageBytes == null ||
-        widget.readOnly) {
-      return null;
+    if (widget.readOnly) return null;
+    if (widget.onPasteImage == null || widget.onImportImageBytes == null) {
+      return standardCommandShortcutEvents;
     }
     return [
       for (final event in standardCommandShortcutEvents)
@@ -817,6 +935,11 @@ class PEditorState extends State<PEditor> {
   void dispose() {
     _debounce?.cancel();
     _sub?.cancel();
+    final interceptor = _newlineInterceptor;
+    if (interceptor != null) {
+      _editorState.service.keyboardService?.unregisterInterceptor(interceptor);
+      _newlineInterceptor = null;
+    }
     _disposeLinkRecognizers();
     widget.controller?._detach(this);
     super.dispose();
@@ -838,12 +961,31 @@ class PEditorState extends State<PEditor> {
       commandShortcutEvents: _commandShortcuts(),
       blockComponentBuilders: _blockBuilders(),
     );
+    // 图片块在没有 width 属性时按 `MediaQuery.size.width` 铺满，而编辑区两侧
+    // 还有内边距——直接铺满会画到编辑区外面（手机上尤其明显，选中图片时的
+    // 选框也会跟着跑出去）。这里把编辑区内部的 MediaQuery 宽度收窄到可用宽度。
+    final horizontalPadding = mobile ? 32.0 : 48.0;
     final surface = _withImageDrop(
       ColoredBox(
         color: theme.scaffoldBackgroundColor,
-        child: DefaultTextStyle.merge(
-          style: TextStyle(color: scheme.onSurface, fontFamily: 'NotoSansSC'),
-          child: editor,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final media = MediaQuery.of(context);
+            final available = (constraints.maxWidth - horizontalPadding)
+                .clamp(120.0, constraints.maxWidth);
+            return MediaQuery(
+              data: media.copyWith(
+                size: Size(available, media.size.height),
+              ),
+              child: DefaultTextStyle.merge(
+                style: TextStyle(
+                  color: scheme.onSurface,
+                  fontFamily: 'NotoSansSC',
+                ),
+                child: editor,
+              ),
+            );
+          },
         ),
       ),
     );
@@ -938,5 +1080,39 @@ class PEditorState extends State<PEditor> {
       textStyleConfiguration: config,
       textSpanDecorator: _decorateSpan,
     );
+  }
+}
+
+/// 回车兜底：引擎发 `performAction(newline)` 时插入新段落。
+/// 上游对这个动作的内置实现只写日志，桌面端 Enter 掉线时会导致「打不出换行」。
+class _NewlineInterceptor extends AppFlowyKeyboardServiceInterceptor {
+  _NewlineInterceptor(this._isReadOnly);
+
+  final bool Function() _isReadOnly;
+
+  @override
+  Future<bool> interceptPerformAction(
+    TextInputAction action,
+    EditorState editorState,
+  ) async {
+    if (action != TextInputAction.newline && action != TextInputAction.done) {
+      return false;
+    }
+    if (_isReadOnly()) {
+      return false;
+    }
+    final selection = editorState.selection;
+    if (selection == null) {
+      return false;
+    }
+    if (!selection.isCollapsed) {
+      await editorState.deleteSelection(selection);
+    }
+    final current = editorState.selection;
+    if (current == null || !current.isCollapsed) {
+      return true;
+    }
+    await editorState.insertNewLine(position: current.start);
+    return true;
   }
 }
